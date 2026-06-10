@@ -1,0 +1,6 @@
+/target
+
+# never commit real env material or backups
+.env
+.env.*
+*.bak

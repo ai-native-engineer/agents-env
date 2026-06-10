@@ -1,0 +1,24 @@
+[package]
+name = "agents-env"
+version = "0.1.0"
+edition = "2024"
+description = "Env vars for AI agents — use secrets without ever seeing them"
+license = "MIT"
+repository = "https://github.com/seungwonme/agents-env"
+keywords = ["env", "secrets", "ai-agents", "dotenv", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+
+[profile.release]
+strip = true
+lto = true
+
+[dependencies]
+aho-corasick = "1.1.4"
+clap = { version = "4.6.1", features = ["derive"] }
+libc = "0.2.186"
+same-file = "1.0.6"
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+predicates = "3.1.4"
+tempfile = "3.27.0"
