@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Env vars for AI agents — use secrets without ever seeing them"
 license = "MIT"
-repository = "https://github.com/seungwonme/agents-env"
+repository = "https://github.com/ai-native-engineer/agents-env"
 keywords = ["env", "secrets", "ai-agents", "dotenv", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
