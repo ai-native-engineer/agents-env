@@ -185,9 +185,16 @@ impl EnvFile {
     }
 }
 
-/// Quote a literal value for writing: always double quotes, `\` and `"` escaped.
+/// Quote a literal value for writing: always double quotes, with `\`, `"`,
+/// newline, carriage return and tab escaped so a value can never break the
+/// one-key-per-line file structure on the next parse.
 pub fn quote_value(v: &str) -> String {
-    let escaped = v.replace('\\', "\\\\").replace('"', "\\\"");
+    let escaped = v
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
     format!("\"{escaped}\"")
 }
 
@@ -228,15 +235,38 @@ fn parse_entry(raw: &str) -> Option<Entry> {
             match bytes[j] {
                 b'\\' if j + 1 < bytes.len() => {
                     match bytes[j + 1] {
-                        b'"' => val.push('"'),
-                        b'\\' => val.push('\\'),
-                        b'n' => val.push('\n'),
-                        c => {
+                        b'"' => {
+                            val.push('"');
+                            j += 2;
+                        }
+                        b'\\' => {
                             val.push('\\');
-                            val.push(c as char);
+                            j += 2;
+                        }
+                        b'n' => {
+                            val.push('\n');
+                            j += 2;
+                        }
+                        b'r' => {
+                            val.push('\r');
+                            j += 2;
+                        }
+                        b't' => {
+                            val.push('\t');
+                            j += 2;
+                        }
+                        _ => {
+                            // Unknown escape: keep the backslash, then copy the
+                            // next *Unicode scalar* (not one byte — bytes[j+1]
+                            // may be the lead byte of a multibyte char, and
+                            // advancing by 1 would land mid-codepoint and panic
+                            // the `chars().next()` in the default arm).
+                            val.push('\\');
+                            let ch = raw[j + 1..].chars().next().unwrap();
+                            val.push(ch);
+                            j += 1 + ch.len_utf8();
                         }
                     }
-                    j += 2;
                 }
                 b'"' => {
                     closed = true;
@@ -354,5 +384,25 @@ mod tests {
         let f = EnvFile::parse(Path::new("x"), "BAD=\"oops\n");
         assert_eq!(f.entries().count(), 0);
         assert_eq!(f.unparseable_lines(), vec![0]);
+    }
+
+    #[test]
+    fn backslash_before_multibyte_does_not_panic() {
+        // Unknown escape `\é`: the lead byte of é must not be treated as one
+        // byte (that used to land mid-codepoint and panic).
+        let f = EnvFile::parse(Path::new("x"), "K=\"\\é\"\n");
+        let (_, e) = f.entries().next().unwrap();
+        assert_eq!(e.value, "\\é");
+    }
+
+    #[test]
+    fn newline_value_round_trips_without_breaking_structure() {
+        let quoted = quote_value("a\nb\tc");
+        assert!(!quoted.contains('\n'), "must not embed a real newline: {quoted}");
+        let f = EnvFile::parse(Path::new("x"), &format!("K={quoted}\nNEXT=ok\n"));
+        let entries: Vec<_> = f.entries().collect();
+        assert_eq!(entries.len(), 2, "value newline must not split the file");
+        assert_eq!(entries[0].1.value, "a\nb\tc");
+        assert_eq!(entries[1].1.key, "NEXT");
     }
 }

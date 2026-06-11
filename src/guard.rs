@@ -84,8 +84,19 @@ pub fn check_write_allowed(cwd: &Path, name: &str) -> Result<PathBuf, String> {
 /// of the day. Later writes on the same day keep that first backup — the
 /// state at the start of the day is the recovery point that matters.
 pub fn backup(target: &Path) -> io::Result<Option<PathBuf>> {
-    if !target.exists() {
-        return Ok(None);
+    // Use symlink_metadata, not exists(): exists() follows symlinks, and an
+    // attacker may have replaced the (previously absent) target with a symlink
+    // to the global store between check_write_allowed and now (TOCTOU). Never
+    // copy through a symlink — that would leak the link's target into a .bak.
+    match fs::symlink_metadata(target) {
+        Ok(md) if md.file_type().is_symlink() => {
+            return Err(io::Error::other(
+                "target became a symlink before backup — refusing to follow it",
+            ));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
     }
     let name = target.file_name().unwrap().to_string_lossy();
     let bak = target.with_file_name(format!("{}.{}.bak", name, yymmdd()));

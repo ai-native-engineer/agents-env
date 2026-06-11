@@ -232,6 +232,45 @@ fn run_selector_with_tag_picks_account() {
 }
 
 #[test]
+fn run_masks_short_secret() {
+    // Regression: values < 6 bytes used to be dropped from the mask set, so a
+    // short injected secret leaked. Injected values must always be masked.
+    let sb = Sandbox::new();
+    fs::write(
+        sb.home.path().join(".config/agents-env/global.env"),
+        "PIN=\"12345\" # personal\n",
+    )
+    .unwrap();
+    let out = sb
+        .cmd(true)
+        .args(["run", "PIN", "--", "sh", "-c", "echo got=$PIN"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("got=[masked:PIN]"), "stdout was: {stdout}");
+    assert!(!stdout.contains("12345"));
+}
+
+#[test]
+fn run_masks_overlapping_secret_no_suffix_leak() {
+    // A is a prefix of B; printing B must mask the whole thing, not leak B's tail.
+    let sb = Sandbox::new();
+    fs::write(
+        sb.home.path().join(".config/agents-env/global.env"),
+        "A=\"abcdefghij\" # one\nB=\"abcdefghijKLMNOP\" # two\n",
+    )
+    .unwrap();
+    let out = sb
+        .cmd(true)
+        .args(["run", "B", "--", "sh", "-c", "echo v=$B"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(!stdout.contains("KLMNOP"), "suffix leaked: {stdout}");
+    assert!(!stdout.contains("abcdefghij"));
+}
+
+#[test]
 fn run_no_mask_refused_in_agent_mode() {
     let sb = Sandbox::new();
     sb.cmd(true)

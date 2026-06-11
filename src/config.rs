@@ -36,10 +36,19 @@ pub fn global_store() -> PathBuf {
     config_dir().join("global.env")
 }
 
+/// Expand `~/` and resolve relative paths against the config dir, so the global
+/// store path is always absolute. A relative `global_store=` must never be
+/// interpreted against the caller's cwd — that would let `set --to .env` from
+/// the right directory collide with the store and defeat the write guard.
 fn expand_tilde(p: &str) -> PathBuf {
     if let Some(rest) = p.strip_prefix("~/") {
         home().join(rest)
     } else {
-        PathBuf::from(p)
+        let pb = PathBuf::from(p);
+        if pb.is_absolute() {
+            pb
+        } else {
+            config_dir().join(pb)
+        }
     }
 }

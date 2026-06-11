@@ -2,12 +2,15 @@
 //!
 //! Values reach the child only via its environment (and `{{KEY}}` argv
 //! placeholders resolved at exec time). When masking is on, the child's
-//! stdout/stderr are pumped through an Aho-Corasick stream replacer, so any
-//! occurrence of a known secret value — including across chunk boundaries —
-//! is rewritten to `[masked:KEY]` before it can reach the caller's context.
+//! stdout/stderr are pumped through a leftmost-longest Aho-Corasick replacer
+//! with a hold-back buffer, so any occurrence of a known secret value — even
+//! one straddling a read boundary, and even when one secret is a prefix of
+//! another — is rewritten to `[masked:KEY]` before it reaches the caller.
 
-use aho_corasick::AhoCorasick;
+use aho_corasick::{AhoCorasick, MatchKind};
+use std::io::{self, Read, Write};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::thread;
 
 /// Substitute `{{KEY}}` placeholders in argv with injected values.
@@ -26,9 +29,69 @@ pub fn substitute_argv(argv: &[String], inject: &[(String, String)]) -> Vec<Stri
         .collect()
 }
 
+/// Stream `rdr` to `wtr`, masking every match. Leftmost-longest semantics mean
+/// the longest secret wins at any position (so `B="abcdefXYZ"` is masked whole
+/// even when `A="abcdef"` is also a pattern). A hold-back of `max_len - 1` bytes
+/// guarantees no match that could still grow with future input is emitted early.
+fn stream_mask<R: Read, W: Write>(
+    mut rdr: R,
+    mut wtr: W,
+    ac: &AhoCorasick,
+    repls: &[Vec<u8>],
+    max_len: usize,
+) -> io::Result<()> {
+    let holdback = max_len.saturating_sub(1);
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = rdr.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        // Bytes in [0, settled) cannot be the start of a match that extends past
+        // the current buffer, so leftmost-longest sees their true longest match.
+        let settled = buf.len().saturating_sub(holdback);
+        if settled == 0 {
+            continue;
+        }
+        let consumed = mask_region(&buf, settled, ac, repls, &mut wtr)?;
+        buf.drain(..consumed);
+    }
+    // EOF: everything left is settled.
+    let len = buf.len();
+    mask_region(&buf, len, ac, repls, &mut wtr)?;
+    wtr.flush()
+}
+
+/// Replace matches whose start is `< settled`, emit the settled literal bytes
+/// between them, and return how many bytes of `buf` were consumed (emitted).
+fn mask_region<W: Write>(
+    buf: &[u8],
+    settled: usize,
+    ac: &AhoCorasick,
+    repls: &[Vec<u8>],
+    wtr: &mut W,
+) -> io::Result<usize> {
+    let mut pos = 0usize;
+    for m in ac.find_iter(buf) {
+        if m.start() >= settled {
+            break;
+        }
+        wtr.write_all(&buf[pos..m.start()])?;
+        wtr.write_all(&repls[m.pattern()])?;
+        pos = m.end(); // may exceed `settled`: the match was complete in buf
+    }
+    if pos < settled {
+        wtr.write_all(&buf[pos..settled])?;
+        pos = settled;
+    }
+    Ok(pos)
+}
+
 /// Run `argv` with `inject` added to its environment. When `mask` is true the
 /// child's stdout/stderr are filtered so that any value in `mask_values`
-/// (key, value pairs) appears as `[masked:KEY]`.
+/// (key, value) appears as `[masked:KEY]`.
 /// Returns the child's exit code (128+signal if killed by a signal).
 pub fn run(
     inject: &[(String, String)],
@@ -48,7 +111,10 @@ pub fn run(
         libc::signal(libc::SIGINT, libc::SIG_IGN);
     }
 
-    if !mask || mask_values.is_empty() {
+    // Fast path only when masking is off. When masking is on we always pump,
+    // even with an empty pattern set (a passthrough), so the unfiltered branch
+    // can never be reached in agent mode.
+    if !mask {
         return match cmd.status() {
             Ok(s) => exit_code(s),
             Err(e) => {
@@ -68,25 +134,29 @@ pub fn run(
     };
 
     let patterns: Vec<&[u8]> = mask_values.iter().map(|(_, v)| v.as_bytes()).collect();
-    let replacements: Vec<Vec<u8>> = mask_values
-        .iter()
-        .map(|(k, _)| format!("[masked:{k}]").into_bytes())
-        .collect();
-    // Standard match kind is the only one that supports streaming replacement;
-    // each secret value is its own pattern, so leftmost-first matching still
-    // masks every full value (the no-leak property holds).
-    let ac = AhoCorasick::new(&patterns).expect("failed to build masking automaton");
+    let replacements: Arc<Vec<Vec<u8>>> = Arc::new(
+        mask_values
+            .iter()
+            .map(|(k, _)| format!("[masked:{k}]").into_bytes())
+            .collect(),
+    );
+    let max_len = patterns.iter().map(|p| p.len()).max().unwrap_or(0);
+    let ac = Arc::new(
+        AhoCorasick::builder()
+            .match_kind(MatchKind::LeftmostLongest)
+            .build(&patterns)
+            .expect("failed to build masking automaton"),
+    );
 
     let stdout_pipe = child.stdout.take().expect("stdout is piped");
     let stderr_pipe = child.stderr.take().expect("stderr is piped");
-    let ac2 = ac.clone();
-    let reps2 = replacements.clone();
+    let (ac2, reps2) = (Arc::clone(&ac), Arc::clone(&replacements));
 
     let t_out = thread::spawn(move || {
-        let _ = ac.try_stream_replace_all(stdout_pipe, std::io::stdout(), &replacements);
+        let _ = stream_mask(stdout_pipe, io::stdout(), &ac, &replacements, max_len);
     });
     let t_err = thread::spawn(move || {
-        let _ = ac2.try_stream_replace_all(stderr_pipe, std::io::stderr(), &reps2);
+        let _ = stream_mask(stderr_pipe, io::stderr(), &ac2, &reps2, max_len);
     });
 
     let _ = t_out.join();
@@ -103,4 +173,79 @@ pub fn run(
 fn exit_code(s: std::process::ExitStatus) -> i32 {
     use std::os::unix::process::ExitStatusExt;
     s.code().unwrap_or(128 + s.signal().unwrap_or(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mask_all(values: &[(&str, &str)], input: &str) -> String {
+        let patterns: Vec<&[u8]> = values.iter().map(|(_, v)| v.as_bytes()).collect();
+        let repls: Vec<Vec<u8>> = values
+            .iter()
+            .map(|(k, _)| format!("[masked:{k}]").into_bytes())
+            .collect();
+        let max_len = patterns.iter().map(|p| p.len()).max().unwrap_or(0);
+        let ac = AhoCorasick::builder()
+            .match_kind(MatchKind::LeftmostLongest)
+            .build(&patterns)
+            .unwrap();
+        let mut out = Vec::new();
+        stream_mask(input.as_bytes(), &mut out, &ac, &repls, max_len).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn masks_basic() {
+        assert_eq!(
+            mask_all(&[("K", "secret123")], "x=secret123;"),
+            "x=[masked:K];"
+        );
+    }
+
+    #[test]
+    fn overlapping_secret_masked_whole_no_suffix_leak() {
+        // B is a superstring of A; the full B must be masked, not "A]XYZ".
+        let out = mask_all(&[("A", "abcdef"), ("B", "abcdefXYZ")], "v=abcdefXYZ!");
+        assert_eq!(out, "v=[masked:B]!");
+        assert!(!out.contains("XYZ"));
+    }
+
+    #[test]
+    fn short_secret_is_masked() {
+        assert_eq!(mask_all(&[("PIN", "12345")], "pin=12345."), "pin=[masked:PIN].");
+    }
+
+    #[test]
+    fn match_straddling_read_boundary() {
+        // Drive the chunked path directly: secret split across two reads.
+        struct TwoChunks(Vec<u8>, usize);
+        impl Read for TwoChunks {
+            fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+                if self.1 >= self.0.len() {
+                    return Ok(0);
+                }
+                // hand back one byte at a time to stress the hold-back buffer
+                b[0] = self.0[self.1];
+                self.1 += 1;
+                Ok(1)
+            }
+        }
+        let patterns: Vec<&[u8]> = vec![b"abcdefXYZ"];
+        let repls = vec![b"[masked:B]".to_vec()];
+        let ac = AhoCorasick::builder()
+            .match_kind(MatchKind::LeftmostLongest)
+            .build(&patterns)
+            .unwrap();
+        let mut out = Vec::new();
+        stream_mask(
+            TwoChunks(b"v=abcdefXYZ!".to_vec(), 0),
+            &mut out,
+            &ac,
+            &repls,
+            9,
+        )
+        .unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "v=[masked:B]!");
+    }
 }

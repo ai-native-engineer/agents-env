@@ -308,21 +308,29 @@ fn cmd_run(cli: &Cli, selectors: &[String], all: bool, no_mask: bool, command: &
         }
     }
 
-    // Mask set: injected values ∪ all global store values ∪ local scope values.
+    // Mask set: injected values (ALWAYS, any length — a leak here is the value
+    // the agent asked to use) ∪ ambient values from the global store and local
+    // scope (length-floored to avoid over-masking common short strings).
     let mut mask_values: Vec<(String, String)> = inject.clone();
+    let mut ambient: Vec<(String, String)> = Vec::new();
     if let Ok(g) = EnvFile::load(&config::global_store()) {
         for (_, e) in g.entries() {
-            mask_values.push((e.key.clone(), e.value.clone()));
+            ambient.push((e.key.clone(), e.value.clone()));
         }
     }
     if is_local {
         for (_, e) in f.entries() {
-            mask_values.push((e.key.clone(), e.value.clone()));
+            ambient.push((e.key.clone(), e.value.clone()));
         }
     }
-    mask_values.retain(|(_, v)| v.len() >= 6);
-    mask_values.sort_by(|a, b| a.1.cmp(&b.1));
-    mask_values.dedup_by(|a, b| a.1 == b.1);
+    ambient.retain(|(_, v)| v.len() >= 6);
+    mask_values.extend(ambient);
+    // Order-preserving dedup by value: injected entries come first, so an
+    // injected short secret is never the one dropped.
+    {
+        let mut seen = std::collections::HashSet::new();
+        mask_values.retain(|(_, v)| seen.insert(v.clone()));
+    }
 
     mask::run(&inject, command, &mask_values, !no_mask)
 }

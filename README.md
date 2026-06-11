@@ -80,6 +80,13 @@ Every write makes a `<file>.YYMMDD.bak` backup first (first-of-the-day wins — 
 
 Masking is **defense in depth, not a sandbox**. It catches verbatim secret values in child output; it does not catch a value the child re-encodes (base64, URL-encoding, splitting). `cat .env` and Claude Code's `@.env` inline reference bypass this tool entirely — that gap is closed by the harness deny layer. `doctor` checks that your `~/.claude/settings.json` denies `Read(**/.env)` / `Read(**/.env.*)`; add those rules so the two layers cover each other.
 
+Known limitations (by design, or deferred):
+
+- **Agent detection is a signal, not a wall.** Mode is read from env markers, which an agent could unset (`env -u CLAUDECODE …`) to force human output, or `--no-mask`. This is fine for the actual threat model — an *honest* agent that shouldn't accidentally log a secret. A *malicious* agent can read `~/.dotfiles/.env` directly anyway; that's the deny layer's job, not this tool's.
+- **`{{KEY}}` argv substitution is visible to same-user `ps`.** The value lands in the child's argv, readable by other processes of the same user. Use env injection (no `{{KEY}}`) for anything sensitive on a shared box.
+- **Parent-directory-swap TOCTOU.** The write guard canonicalizes cwd and uses `O_NOFOLLOW` on the temp file, but a same-user attacker who renames a parent directory mid-write could still redirect it. Closing this fully needs directory-fd (`openat`/`renameat`) writes — planned for a later version. Not reachable without local same-user write access, at which point your secrets are already exposed.
+- **Line endings normalize to LF.** Round-trip preserves comments, order and spacing, but CRLF files are rewritten with LF and a trailing newline is added.
+
 ## License
 
 MIT
