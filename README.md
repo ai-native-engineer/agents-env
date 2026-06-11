@@ -1,104 +1,91 @@
 # agents-env
 
-Env var manager that lets AI coding agents **use** secrets without ever **seeing** them.
+**한국어** · [English](./README.en.md)
 
-No schema, no encrypted vault, no cloud account. Keep your plaintext `.env` exactly as it is — `agents-env` is a zero-config safety layer on top of it. The same command prints the value for a human at a terminal and masks it for an agent (Claude Code, Cursor, …), so you never split your workflow in two.
+AI 코딩 에이전트가 시크릿 값을 **한 번도 보지 않고** 환경변수를 사용하게 해주는 CLI.
+
+스키마도, 암호화 vault도, 클라우드 계정도 필요 없다. 쓰던 평문 `.env`를 그대로 둔 채 그 위에 얹는 zero-config 안전 레이어다. 같은 명령이 터미널 앞의 사람에게는 값을 보여주고, 에이전트(Claude Code, Codex 등)에게는 가린다. 그래서 워크플로를 사람용/에이전트용 둘로 쪼갤 필요가 없다.
 
 ```
 agents-env run TAVILY_API_KEY@work -- curl -H "Authorization: Bearer {{TAVILY_API_KEY}}" https://api/...
 ```
 
-The value goes only into the child process. `{{TAVILY_API_KEY}}` in the argv is resolved at exec time, so the transcript keeps the placeholder. If the child echoes the secret (e.g. `curl -v`, a stack trace), it is rewritten to `[masked:TAVILY_API_KEY]` in real time before it can reach the agent's context.
+값은 자식 프로세스 안으로만 들어간다. argv의 `{{TAVILY_API_KEY}}`는 실행되는 순간 치환되므로 대화 기록에는 플레이스홀더만 남는다. 자식이 `curl -v`나 스택트레이스로 키를 토해내도 실시간으로 `[masked:TAVILY_API_KEY]`로 바뀌어 에이전트 컨텍스트에 닿기 전에 가려진다.
 
-## Why this exists
+## 왜 필요한가
 
-Every secret tool injects secrets into a process. None of them solve "the value must never land in an AI's conversation log, while the agent still reads *and writes* env files." A 14-tool survey put the best coverage at 3/7 of these requirements:
+기존 시크릿 도구는 전부 "프로세스에 시크릿을 주입"하는 문제를 푼다. "값이 AI 대화 기록에 절대 남지 않으면서, 그러는 동안 에이전트가 env 파일을 읽고 쓰기까지" 하는 건 아무도 풀지 않았다. 14개 도구를 조사했을 때 이 요구사항의 최고 커버리지가 3/7이었다.
 
-- **Output masking** — `doppler/infisical run` inject fine but don't mask child output; one `curl -v` leaks the value. Only varlock and (paid) 1Password mask.
-- **Value-free copy** — no surveyed tool copies a global secret into a local `.env` without the value passing through the caller. `dotenvx set` takes the value as an argument, i.e. the agent already saw it.
-- **Auto agent detection** — varlock needs a manual `--agent` flag; forget it once and the value leaks. agents-env detects Claude Code (`CLAUDECODE` / `CLAUDE_CODE_ENTRYPOINT` / `AI_AGENT`) and Codex (`CODEX_SANDBOX`) automatically, and is safe by default. Other harnesses opt in with `AGENTS_ENV_AGENT_MODE=1` or a `markers=A,B,C` line in the config.
-- **Asymmetric write guard** — the human-owned global store is structurally unwritable by the tool (see below). No other tool models this.
+- **출력 마스킹** — `doppler`/`infisical run`은 주입은 하지만 자식 출력을 마스킹하지 않는다. `curl -v` 한 번이면 값이 샌다. 마스킹하는 건 varlock과 (유료) 1Password뿐이다.
+- **값 비경유 복사** — 전역 시크릿을 로컬 `.env`로 옮길 때 값이 호출자를 거치지 않는 도구가 없다. `dotenvx set`은 값을 인자로 받는다. 즉 에이전트가 이미 값을 본 것이다.
+- **에이전트 자동 감지** — varlock은 수동 `--agent` 플래그가 필요하다. 한 번 까먹으면 샌다. agents-env는 Claude Code(`CLAUDECODE`/`CLAUDE_CODE_ENTRYPOINT`/`AI_AGENT`)와 Codex(`CODEX_SANDBOX`)를 자동 감지하고 기본값이 안전하다. 다른 하네스는 `AGENTS_ENV_AGENT_MODE=1` 또는 config의 `markers=A,B,C`로 등록한다.
+- **비대칭 쓰기 가드** — 사람 소유의 전역 store는 이 도구로 구조적으로 쓸 수 없다(아래 참조). 이걸 모델링한 도구는 없다.
 
-## Install
+## 동작 방식
 
-The CLI (required):
+핵심은 **`get`은 발견, `run`은 사용**이다.
 
-```
-cargo install --path .          # or: brew install ai-native-engineer/tap/agents-env  (planned)
-```
+흔한 실수는 `mytool --key "$(agents-env get KEY)"`처럼 쓰는 것이다. 이건 일부러 막아뒀다. 명령 치환은 값을 셸 명령줄로, 즉 에이전트 컨텍스트로 끌어들이기 때문에 `get`은 에이전트 모드에서 값 대신 메타데이터(키 이름 + 길이)만 돌려준다. 실제로 시크릿을 쓰려면 `run`이 값을 자식 안으로 흘려보내게 한다.
 
-The Claude Code plugin (optional — teaches the agent how to use the CLI). This
-repo is also its own plugin marketplace:
+마스킹은 **출력** 스트림(자식 → 나)만 다시 쓴다. 프로그램이 **받는 입력**은 절대 건드리지 않는다. 그래서 프로그램은 진짜 값을 받아 정상 동작하고, 다만 그 값이 되돌아 출력될 때만 가려진다.
 
-```
-claude plugin marketplace add ai-native-engineer/agents-env
-claude plugin install agents-env@agents-env
-```
+## 명령
 
-The plugin only ships the skill; it still needs the CLI installed above.
-
-## Setup
-
-Point the global store at your existing master `.env`:
-
-```
-mkdir -p ~/.config/agents-env
-echo 'global_store=~/.dotfiles/.env' > ~/.config/agents-env/config
-```
-
-Default if unset: `~/.config/agents-env/global.env`. The path is **not** overridable per command — that would be a bypass surface for the write guard.
-
-## Commands
-
-| Command | What it does |
+| 명령 | 하는 일 |
 |---|---|
-| `get <pattern>` | Look up keys (substring match). Human: prints `KEY=value`. Agent: prints `KEY [set, N chars] # tag` only. |
-| `ls [pattern]` | Key names + tags. Never prints values, in any mode. |
-| `run <KEY[@tag]…> -- <cmd>` | Inject into the child env, mask its output, resolve `{{KEY}}` in argv. `--all` injects the whole scope. |
-| `set <KEY> <VALUE> --to <file>` | Write a **non-secret** literal to a local file. Warns if the value looks like a credential. |
-| `copy <KEY[@tag]…> --to <file>` | Copy secrets from the global store into a local file — value never printed. `--as NEWKEY` renames. |
-| `edit` | Open the global store in `$EDITOR`. **Human only** — refused in agent mode and on non-TTY. |
-| `doctor` | Audit: file permissions, gitignore coverage, stale backups, untagged duplicate keys, Claude Code deny rules. |
+| `get <pattern>` | 키 조회(부분 일치). 사람: `KEY=value` 출력. 에이전트: `KEY [set, N chars] # tag`만. |
+| `ls [pattern]` | 키 이름 + 태그. 어떤 모드에서도 값은 출력 안 함. |
+| `run <KEY[@tag]…> -- <cmd>` | 자식 env에 주입, 출력 마스킹, argv의 `{{KEY}}` 치환. `--all`은 스코프 전체 주입. |
+| `set <KEY> <VALUE> --to <file>` | 로컬 파일에 **비밀 아닌** 리터럴 기록. 값이 크리덴셜처럼 보이면 경고. |
+| `copy <KEY[@tag]…> --to <file>` | 전역 store의 시크릿을 로컬 파일로 복사 — 값은 출력되지 않음. `--as NEWKEY`로 이름 변경. |
+| `edit` | 전역 store를 `$EDITOR`로 연다. **사람 전용** — 에이전트 모드·비TTY에서 거부. |
+| `doctor` | 감사: 파일 권한, gitignore 커버리지, 오래된 백업, 태그 없는 중복 키, Claude Code deny 규칙. |
 
-### Scope and files
+전체 플래그는 `agents-env --help`.
 
-Default scope is the global store. `-l`/`--local` reads `./.env`; `-f <name>` reads `./<name>` (implies local) for managing `.env.local`, `.env.production`, etc.
+### 스코프와 파일
+
+기본 스코프는 전역 store다. `-l`/`--local`은 `./.env`를, `-f <name>`은 `./<name>`(로컬 함축)을 읽어 `.env.local`, `.env.production` 등 여러 파일을 다룬다.
 
 ```
 agents-env -f .env.production get DATABASE
 ```
 
-### Duplicate keys: `KEY@tag`
+### 중복 키: `KEY@tag`
 
-When a key has several accounts, the inline `# comment` is the tag. Decisive operations (`run`, `copy`) require a unique match — an ambiguous selector errors with the candidate tags (never the values):
+한 키에 계정이 여럿이면 인라인 `# comment`가 태그가 된다. 결정적 작업(`run`, `copy`)은 유일 매치를 요구하며, 모호한 셀렉터는 후보 태그(값은 절대 아님)와 함께 에러를 낸다.
 
 ```
 agents-env copy NOTION_API_KEY@demodev --to .env.local
 ```
 
-## Write guard
+## 쓰기 가드
 
-`set`/`copy` can only write `.env*` files in the current directory. The global store is unreachable by construction:
+`set`/`copy`는 현재 디렉토리의 `.env*` 파일만 쓸 수 있다. 전역 store는 구조적으로 도달 불가능하다.
 
-- No flag points the write side at the global scope.
-- File names must be bare `.env`/`.env.*` — path separators are rejected, so `../`, absolute paths and `.bak` targets are out.
-- The target is rejected if it is a **symlink**, has **hard links**, or `samefile`-matches the global store.
-- Writing inside the global store's directory is refused.
-- Inside a git repo, a secret-bearing `copy` target must be untracked **and** gitignored — otherwise it's a hard error (no override; fix `.gitignore`).
+- 쓰기 쪽을 전역 스코프로 향하게 하는 플래그가 없다.
+- 파일명은 bare `.env`/`.env.*`만 허용 — 경로 구분자가 거부되므로 `../`, 절대경로, `.bak` 타겟이 차단된다.
+- 타겟이 **심볼릭링크**거나 **하드링크**를 가졌거나 전역 store와 `samefile`이면 거부.
+- 전역 store 디렉토리 안에서의 쓰기 거부.
+- git 레포 안에서는 시크릿을 쓰는 `copy` 타겟이 untracked **이면서** gitignore되어 있어야 한다. 아니면 하드 에러(override 없음, `.gitignore`를 고쳐야 함).
 
-Every write makes a `<file>.YYMMDD.bak` backup first (first-of-the-day wins — the start-of-day state is the recovery point), then writes atomically via an `O_NOFOLLOW` temp file + rename. Backups are `.env`-prefixed so one `.env*` gitignore line covers them.
+모든 쓰기는 먼저 `<file>.YYMMDD.bak` 백업을 만들고(당일 첫 백업이 이김 — 그날 작업 시작 상태가 의미 있는 복구 지점), `O_NOFOLLOW` 임시 파일 + rename으로 원자적으로 쓴다. 백업은 `.env` 프리픽스라 `.env*` gitignore 한 줄로 함께 덮인다.
 
-## Threat model (honest limits)
+## 위협 모델 (정직한 한계)
 
-Masking is **defense in depth, not a sandbox**. It catches verbatim secret values in child output; it does not catch a value the child re-encodes (base64, URL-encoding, splitting). `cat .env` and Claude Code's `@.env` inline reference bypass this tool entirely — that gap is closed by the harness deny layer. `doctor` checks that your `~/.claude/settings.json` denies `Read(**/.env)` / `Read(**/.env.*)`; add those rules so the two layers cover each other.
+마스킹은 **심층 방어이지 샌드박스가 아니다**. 자식 출력의 시크릿 값 원문은 잡지만, 자식이 재인코딩한 값(base64, URL 인코딩, 분할)은 못 잡는다. `cat .env`와 Claude Code의 `@.env` 인라인 참조는 이 도구를 통째로 우회한다. 그 구멍은 하네스 deny 레이어가 막는다. `doctor`가 `~/.claude/settings.json`에 `Read(**/.env)`/`Read(**/.env.*)` deny가 있는지 확인하니, 두 레이어가 서로를 덮도록 추가하라.
 
-Known limitations (by design, or deferred):
+알려진 한계(설계상 또는 연기됨):
 
-- **Agent detection is a signal, not a wall.** Mode is read from env markers, which an agent could unset (`env -u CLAUDECODE …`) to force human output, or `--no-mask`. This is fine for the actual threat model — an *honest* agent that shouldn't accidentally log a secret. A *malicious* agent can read `~/.dotfiles/.env` directly anyway; that's the deny layer's job, not this tool's.
-- **`{{KEY}}` argv substitution is visible to same-user `ps`.** The value lands in the child's argv, readable by other processes of the same user. Use env injection (no `{{KEY}}`) for anything sensitive on a shared box.
-- **Parent-directory-swap TOCTOU.** The write guard canonicalizes cwd and uses `O_NOFOLLOW` on the temp file, but a same-user attacker who renames a parent directory mid-write could still redirect it. Closing this fully needs directory-fd (`openat`/`renameat`) writes — planned for a later version. Not reachable without local same-user write access, at which point your secrets are already exposed.
-- **Line endings normalize to LF.** Round-trip preserves comments, order and spacing, but CRLF files are rewritten with LF and a trailing newline is added.
+- **에이전트 감지는 신호이지 벽이 아니다.** 모드는 env 마커로 읽으므로, 에이전트가 마커를 지워(`env -u CLAUDECODE …`) 사람 모드를 강제하거나 `--no-mask`를 쓸 수 있다. 실제 위협 모델에선 괜찮다 — 대상은 *실수로* 시크릿을 로깅하면 안 되는 *정직한* 에이전트다. *악의적* 에이전트는 어차피 `~/.dotfiles/.env`를 직접 읽을 수 있고, 그건 이 도구가 아니라 deny 레이어의 몫이다.
+- **`{{KEY}}` argv 치환은 같은 유저의 `ps`에 보인다.** 값이 자식의 argv에 들어가 같은 유저의 다른 프로세스가 읽을 수 있다. 공유 머신에서 민감한 건 env 주입(`{{KEY}}` 없이)을 써라.
+- **부모 디렉토리 스왑 TOCTOU.** 쓰기 가드는 cwd를 canonicalize하고 임시 파일에 `O_NOFOLLOW`를 쓰지만, 같은 유저 공격자가 쓰기 도중 부모 디렉토리를 rename하면 우회할 수 있다. 완전 차단은 디렉토리 fd(`openat`/`renameat`) 쓰기가 필요하며 다음 버전 예정. 로컬 같은-유저 쓰기 권한 없이는 도달 불가능하고, 그 시점엔 이미 시크릿이 노출된 상태다.
+- **줄 끝은 LF로 정규화된다.** 라운드트립은 주석·순서·간격을 보존하지만 CRLF 파일은 LF로 다시 쓰이고 끝에 개행이 추가된다.
 
-## License
+## 설치
+
+설치·설정은 동봉된 에이전트 스킬에 들어 있어 Claude Code나 Codex에게 시키면 된다. 수동 설치는 `cargo install agents-env`(crates.io 등록 전이면 `cargo install --git https://github.com/ai-native-engineer/agents-env`).
+
+## 라이선스
 
 MIT
