@@ -17,6 +17,26 @@ description: >-
 into the child process you launch; your transcript only ever holds key names and
 `{{KEY}}` placeholders. Full flags: `agents-env --help`.
 
+## Setup (run once, if `agents-env: command not found`)
+
+Install the CLI, then point the global store at the user's existing master `.env`:
+
+```
+cargo install agents-env          # or: brew install ai-native-engineer/tap/agents-env (planned)
+# fallback if not on crates.io yet:
+cargo install --git https://github.com/ai-native-engineer/agents-env
+
+mkdir -p ~/.config/agents-env
+# only if no config exists — never overwrite an existing one:
+[ -f ~/.config/agents-env/config ] || echo 'global_store=~/.dotfiles/.env' > ~/.config/agents-env/config
+```
+
+Set `global_store=` to wherever the user keeps their master `.env` (ask if unsure;
+default when unset is `~/.config/agents-env/global.env`). Then `agents-env doctor`
+to confirm setup and check the harness deny rules. This works the same for Claude
+Code and Codex — only the optional plugin (`claude plugin install
+agents-env@agents-env`) is Claude-specific.
+
 ## Mental model: `get` is discovery, `run` is use
 
 The wrong instinct is `mytool --key "$(agents-env get KEY)"`. That is broken on
