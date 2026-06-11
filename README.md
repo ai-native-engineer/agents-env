@@ -21,9 +21,21 @@ Every secret tool injects secrets into a process. None of them solve "the value 
 
 ## Install
 
+The CLI (required):
+
 ```
 cargo install --path .          # or: brew install seungwonme/tap/agents-env  (planned)
 ```
+
+The Claude Code plugin (optional — teaches the agent how to use the CLI). This
+repo is also its own plugin marketplace:
+
+```
+claude plugin marketplace add seungwonme/agents-env
+claude plugin install agents-env@agents-env
+```
+
+The plugin only ships the skill; it still needs the CLI installed above.
 
 ## Setup
 

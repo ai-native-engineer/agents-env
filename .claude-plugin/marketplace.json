@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "agents-env",
+  "description": "Marketplace for the agents-env plugin: let AI coding agents use secrets without seeing their values.",
+  "owner": {
+    "name": "Aiden Ahn",
+    "email": "senugw0u@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "agents-env",
+      "source": "./",
+      "version": "0.1.0",
+      "description": "Skill that teaches an agent to use the agents-env CLI: inject secrets into commands without the value reaching the agent's context, copy global secrets into a project .env value-free, and discover keys without printing them.",
+      "category": "security",
+      "author": {
+        "name": "Aiden Ahn",
+        "email": "senugw0u@gmail.com"
+      }
+    }
+  ]
+}

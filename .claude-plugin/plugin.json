@@ -1,0 +1,19 @@
+{
+  "name": "agents-env",
+  "version": "0.1.0",
+  "description": "Env vars for AI agents: use secrets without ever seeing their values. Teaches the agent to inject API keys/tokens into commands (run + output masking + {{KEY}} substitution), copy secrets from a global store into a project .env without the value passing through context, and discover keys without printing them. Requires the `agents-env` CLI (cargo install agents-env).",
+  "author": {
+    "name": "Aiden Ahn",
+    "email": "senugw0u@gmail.com"
+  },
+  "homepage": "https://github.com/seungwonme/agents-env",
+  "repository": "https://github.com/seungwonme/agents-env",
+  "license": "MIT",
+  "keywords": [
+    "secrets",
+    "env",
+    "dotenv",
+    "ai-agents",
+    "security"
+  ]
+}
