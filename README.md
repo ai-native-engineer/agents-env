@@ -16,7 +16,7 @@ Every secret tool injects secrets into a process. None of them solve "the value 
 
 - **Output masking** — `doppler/infisical run` inject fine but don't mask child output; one `curl -v` leaks the value. Only varlock and (paid) 1Password mask.
 - **Value-free copy** — no surveyed tool copies a global secret into a local `.env` without the value passing through the caller. `dotenvx set` takes the value as an argument, i.e. the agent already saw it.
-- **Auto agent detection** — varlock needs a manual `--agent` flag; forget it once and the value leaks. agents-env detects `CLAUDECODE` / `CLAUDE_CODE_ENTRYPOINT` / `AI_AGENT` and is safe by default.
+- **Auto agent detection** — varlock needs a manual `--agent` flag; forget it once and the value leaks. agents-env detects Claude Code (`CLAUDECODE` / `CLAUDE_CODE_ENTRYPOINT` / `AI_AGENT`) and Codex (`CODEX_SANDBOX`) automatically, and is safe by default. Other harnesses opt in with `AGENTS_ENV_AGENT_MODE=1` or a `markers=A,B,C` line in the config.
 - **Asymmetric write guard** — the human-owned global store is structurally unwritable by the tool (see below). No other tool models this.
 
 ## Install

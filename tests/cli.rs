@@ -10,6 +10,7 @@ const AI_MARKERS: &[&str] = &[
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
     "AI_AGENT",
+    "CODEX_SANDBOX",
     "AGENTS_ENV_AGENT_MODE",
 ];
 
@@ -76,6 +77,39 @@ fn agent_get_hides_value() {
     let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
     assert!(!stdout.contains("tvly-aaaa1111bbbb2222"));
     assert!(stdout.contains("TAVILY_API_KEY"));
+    assert!(stdout.contains("[set,"));
+}
+
+#[test]
+fn codex_sandbox_marker_hides_value() {
+    let sb = Sandbox::new();
+    let out = sb
+        .cmd(false) // human base, then add Codex's sandbox marker
+        .env("CODEX_SANDBOX", "seatbelt")
+        .args(["get", "tavily"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(!stdout.contains("tvly-aaaa1111bbbb2222"));
+    assert!(stdout.contains("[set,"));
+}
+
+#[test]
+fn config_extra_markers_trigger_agent_mode() {
+    let sb = Sandbox::new();
+    fs::write(
+        sb.home.path().join(".config/agents-env/config"),
+        "markers=MY_CUSTOM_AGENT\n",
+    )
+    .unwrap();
+    let out = sb
+        .cmd(false)
+        .env("MY_CUSTOM_AGENT", "1")
+        .args(["get", "tavily"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(!stdout.contains("tvly-aaaa1111bbbb2222"));
     assert!(stdout.contains("[set,"));
 }
 

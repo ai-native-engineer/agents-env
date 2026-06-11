@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use store::{EnvFile, SelectError};
 
 const AGENT_GUIDE: &str = "\
-AGENT MODE (auto-detected via CLAUDECODE / CLAUDE_CODE_ENTRYPOINT / AI_AGENT):
+AGENT MODE (auto-detected via CLAUDECODE / CLAUDE_CODE_ENTRYPOINT / AI_AGENT / CODEX_SANDBOX):
   secret values are never printed — work with key names only.
 
   agents-env get TAVILY                       discover keys (values stay hidden)
