@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use store::{EnvFile, SelectError};
 
 const AGENT_GUIDE: &str = "\
-AGENT MODE (auto-detected via CLAUDECODE / CLAUDE_CODE_ENTRYPOINT / AI_AGENT / CODEX_SANDBOX):
+AGENT MODE (auto: Claude Code markers, Codex sandbox; opt-in: AGENTS_ENV_AGENT_MODE / markers=):
   secret values are never printed — work with key names only.
 
   agents-env get TAVILY                       discover keys (values stay hidden)
@@ -26,6 +26,10 @@ AGENT MODE (auto-detected via CLAUDECODE / CLAUDE_CODE_ENTRYPOINT / AI_AGENT / C
   KEY@tag picks one of several accounts for the same key (tags come from the
   inline '# comment' in the env file). The global store is read-only by
   design: no flag of set/copy can reach it. Humans edit it with `agents-env edit`.
+
+  Other assistants without a verified stable marker are supported by explicit
+  opt-in: launch them with AGENTS_ENV_AGENT_MODE=1, or add a marker you set
+  yourself via `markers=MY_AGENT_MODE` in ~/.config/agents-env/config.
 ";
 
 #[derive(Parser)]
@@ -313,12 +317,16 @@ fn cmd_run(cli: &Cli, selectors: &[String], all: bool, no_mask: bool, command: &
     // scope (length-floored to avoid over-masking common short strings).
     let mut mask_values: Vec<(String, String)> = inject.clone();
     let mut ambient: Vec<(String, String)> = Vec::new();
-    if let Ok(g) = EnvFile::load(&config::global_store()) {
-        for (_, e) in g.entries() {
+    if is_local {
+        if let Ok(g) = EnvFile::load(&config::global_store()) {
+            for (_, e) in g.entries() {
+                ambient.push((e.key.clone(), e.value.clone()));
+            }
+        }
+        for (_, e) in f.entries() {
             ambient.push((e.key.clone(), e.value.clone()));
         }
-    }
-    if is_local {
+    } else {
         for (_, e) in f.entries() {
             ambient.push((e.key.clone(), e.value.clone()));
         }
@@ -337,7 +345,9 @@ fn cmd_run(cli: &Cli, selectors: &[String], all: bool, no_mask: bool, command: &
 
 fn select_error_message(err: &SelectError) -> String {
     match err {
-        SelectError::NotFound(sel) => format!("no entry matches selector '{sel}'"),
+        SelectError::NotFound(sel) => {
+            format!("no entry matches selector '{sel}' — run `agents-env ls {sel}` to discover key names and tags")
+        }
         SelectError::Ambiguous { key, tags } => {
             let opts = tags
                 .iter()

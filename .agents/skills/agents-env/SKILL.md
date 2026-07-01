@@ -37,6 +37,53 @@ to confirm setup and check the harness deny rules. This works the same for Claud
 Code and Codex — only the optional plugin (`claude plugin install
 agents-env@agents-env`) is Claude-specific.
 
+## Assistant support
+
+Agent mode is automatic only for verified runtime markers:
+
+| Assistant | Decision |
+|---|---|
+| Claude Code | Auto-detect: `CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, legacy `CLAUDE_CODE_ENTRYPOINT`, or generic `AI_AGENT`. |
+| OpenAI Codex CLI | Auto-detect in sandboxed commands through `CODEX_SANDBOX`; opt in if sandboxing is bypassed. |
+| Google Gemini CLI | Opt in with `AGENTS_ENV_AGENT_MODE=1` or a user-owned `markers=` entry. |
+| Google Antigravity CLI | Opt in with `AGENTS_ENV_AGENT_MODE=1` or `markers=`. |
+| Cursor CLI | Opt in; no stable child-command marker is documented. |
+| GitHub Copilot CLI | Opt in; no stable child-command marker is documented. |
+| OpenCode | Opt in; public CLI/config docs do not document a stable child-command marker. |
+| Kiro CLI / Amazon Q CLI successor | Opt in; Amazon Q CLI has become Kiro CLI, and no stable marker is documented. |
+| Aider | Opt in; no stable child-command marker is documented. |
+| Qwen Code | Opt in; no stable child-command marker is documented. |
+| Cline CLI | Opt in; no stable child-command marker is documented. |
+| Windsurf/Devin | Opt in by setting the env var in the IDE/cloud-agent shell. |
+
+For any opt-in assistant, launch the agent from a shell with:
+
+```
+export AGENTS_ENV_AGENT_MODE=1
+```
+
+Or wrap a single CLI launch:
+
+```
+AGENTS_ENV_AGENT_MODE=1 cursor-agent
+AGENTS_ENV_AGENT_MODE=1 opencode
+AGENTS_ENV_AGENT_MODE=1 agy
+AGENTS_ENV_AGENT_MODE=1 qwen
+AGENTS_ENV_AGENT_MODE=1 copilot
+AGENTS_ENV_AGENT_MODE=1 gemini
+AGENTS_ENV_AGENT_MODE=1 kiro
+AGENTS_ENV_AGENT_MODE=1 aider
+AGENTS_ENV_AGENT_MODE=1 cline
+```
+
+If the harness sets its own stable marker, add it to config:
+
+```
+mkdir -p ~/.config/agents-env
+printf '\nmarkers=MY_AGENT_MODE\n' >> ~/.config/agents-env/config
+MY_AGENT_MODE=1 agents-env get TAVILY
+```
+
 ## Mental model: `get` is discovery, `run` is use
 
 The wrong instinct is `mytool --key "$(agents-env get KEY)"`. That is broken on

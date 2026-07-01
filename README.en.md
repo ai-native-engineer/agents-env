@@ -26,7 +26,7 @@ There is no shortage of env and secret tools, but few keep the value out of the 
 
 - **Output masking** — when an injected secret appears in the child's stdout/stderr, it is replaced with `[masked:KEY]` in real time. `doppler run` and `infisical run` inject but leave the output untouched.
 - **Value-free copy** — `copy` moves a secret from the global store into a local `.env` without the value passing through the agent's context.
-- **Automatic agent detection** — it recognizes Claude Code and Codex and hides values by default, with no manual flag.
+- **Agent-mode detection** — it auto-detects Claude Code and Codex sandbox from verified runtime markers; other assistants opt in with `AGENTS_ENV_AGENT_MODE=1` or `markers=`.
 - **Asymmetric write guard** — the human-managed global master `.env` cannot be modified through this tool.
 
 ## How it works
@@ -77,7 +77,53 @@ Every write makes a `<file>.YYMMDD.bak` backup first. From the second write of t
 
 Masking is defense in depth, not a sandbox. It catches a secret the child prints verbatim, but not one the child re-encodes (base64, URL-encoding, splitting). `cat .env` and Claude Code's `@.env` inline reference bypass the tool and must be stopped by the harness deny rules. `doctor` checks whether `~/.claude/settings.json` denies `Read(**/.env)` and friends, so configure both layers to back each other up.
 
-- **Auto-detection supports only Claude Code and Codex.** In Cursor, Aider, Windsurf, or a custom harness, the tool cannot tell it is talking to an agent. There, `get` prints values and `--no-mask` is allowed (`run`'s output masking still works everywhere). In those tools, enable it yourself with `AGENTS_ENV_AGENT_MODE=1` in that environment's shell config, or a `markers=...` line in the config.
+### Coding Assistant Support
+
+Auto-detection is enabled only when a stable child-process marker is verified from official docs, local CLI behavior, or public source. Tools without that marker are supported by explicit opt-in, so values still stay hidden once you enable agent mode.
+
+| Tool | Support decision |
+|---|---|
+| Claude Code | Auto-detect: `CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, and existing `CLAUDE_CODE_ENTRYPOINT`/`AI_AGENT`. |
+| OpenAI Codex CLI | Auto-detect: `CODEX_SANDBOX` in sandboxed commands. If you bypass the sandbox, opt in explicitly. |
+| Google Gemini CLI | Opt-in: no stable child-process marker verified. |
+| Google Antigravity CLI | Opt-in: no stable child-process marker verified. |
+| Cursor CLI | Opt-in: no stable marker verified that distinguishes `cursor-agent` itself from commands it runs. |
+| GitHub Copilot CLI | Opt-in: public CLI environment settings do not expose a stable child-process marker. |
+| OpenCode | Opt-in: public CLI/config docs do not expose a stable child-process marker. |
+| Kiro CLI / Amazon Q CLI successor | Opt-in: Amazon Q CLI has become Kiro CLI; no stable child-process marker verified. |
+| Aider | Opt-in: no stable child-process marker verified. |
+| Qwen Code | Opt-in: no stable child-process marker verified. |
+| Cline CLI | Opt-in: no stable child-process marker verified. |
+| Windsurf/Devin | Opt-in: set the env var in the IDE/cloud-agent shell that runs commands. |
+
+For unverified tools, set this in the shell or wrapper that launches the agent:
+
+```
+export AGENTS_ENV_AGENT_MODE=1
+```
+
+You can also wrap one launch:
+
+```
+AGENTS_ENV_AGENT_MODE=1 cursor-agent
+AGENTS_ENV_AGENT_MODE=1 opencode
+AGENTS_ENV_AGENT_MODE=1 agy
+AGENTS_ENV_AGENT_MODE=1 qwen
+AGENTS_ENV_AGENT_MODE=1 copilot
+AGENTS_ENV_AGENT_MODE=1 gemini
+AGENTS_ENV_AGENT_MODE=1 kiro
+AGENTS_ENV_AGENT_MODE=1 aider
+AGENTS_ENV_AGENT_MODE=1 cline
+```
+
+If your own harness can set a custom marker, register it in config:
+
+```
+mkdir -p ~/.config/agents-env
+printf '\nmarkers=MY_AGENT_MODE\n' >> ~/.config/agents-env/config
+MY_AGENT_MODE=1 agents-env get TAVILY
+```
+
 - **Detection is a signal, not a barrier.** Mode is decided from env markers, so an agent can remove them (`env -u CLAUDECODE …`) or pass `--no-mask` to force human mode. The intended threat is an honest agent that should not accidentally log a secret. A malicious agent can read `~/.dotfiles/.env` directly, which is for the deny rules to stop, not this tool.
 - **`{{KEY}}` is visible to a same-user `ps`.** The value lands in the child's argv, where another process of the same user can read it. On a shared machine, use env injection instead of `{{KEY}}` for sensitive values.
 - **Parent-directory-swap TOCTOU.** The guard canonicalizes cwd and uses `O_NOFOLLOW` on the temp file, but a same-user attacker who renames a parent directory mid-write could still redirect it. Closing this fully needs directory-fd (`openat`/`renameat`) writes, planned for a later version. It is unreachable without local same-user write access, and with that access the secrets are already exposed.

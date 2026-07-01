@@ -8,6 +8,7 @@ use tempfile::TempDir;
 
 const AI_MARKERS: &[&str] = &[
     "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
     "CLAUDE_CODE_ENTRYPOINT",
     "AI_AGENT",
     "CODEX_SANDBOX",
@@ -71,27 +72,20 @@ fn human_get_prints_value() {
 }
 
 #[test]
-fn agent_get_hides_value() {
-    let sb = Sandbox::new();
-    let out = sb.cmd(true).args(["get", "tavily"]).assert().success();
-    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
-    assert!(!stdout.contains("tvly-aaaa1111bbbb2222"));
-    assert!(stdout.contains("TAVILY_API_KEY"));
-    assert!(stdout.contains("[set,"));
-}
-
-#[test]
-fn codex_sandbox_marker_hides_value() {
-    let sb = Sandbox::new();
-    let out = sb
-        .cmd(false) // human base, then add Codex's sandbox marker
-        .env("CODEX_SANDBOX", "seatbelt")
-        .args(["get", "tavily"])
-        .assert()
-        .success();
-    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
-    assert!(!stdout.contains("tvly-aaaa1111bbbb2222"));
-    assert!(stdout.contains("[set,"));
+fn builtin_agent_markers_hide_get_values() {
+    for marker in AI_MARKERS {
+        let sb = Sandbox::new();
+        let out = sb
+            .cmd(false)
+            .env(marker, "1")
+            .args(["get", "tavily"])
+            .assert()
+            .success();
+        let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+        assert!(!stdout.contains("tvly-aaaa1111bbbb2222"), "marker={marker}");
+        assert!(stdout.contains("TAVILY_API_KEY"), "marker={marker}");
+        assert!(stdout.contains("[set,"), "marker={marker}");
+    }
 }
 
 #[test]
@@ -169,6 +163,28 @@ fn run_masks_stderr_and_other_global_values() {
 }
 
 #[test]
+fn local_run_still_masks_global_values() {
+    let sb = Sandbox::new();
+    fs::write(sb.cwd.path().join(".env"), "LOCAL_KEY=\"local-secret-123\"\n").unwrap();
+    let out = sb
+        .cmd(true)
+        .args([
+            "-l",
+            "run",
+            "LOCAL_KEY",
+            "--",
+            "sh",
+            "-c",
+            "echo leak=tvly-aaaa1111bbbb2222",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("leak=[masked:TAVILY_API_KEY]"));
+    assert!(!stdout.contains("tvly-aaaa1111bbbb2222"));
+}
+
+#[test]
 fn run_substitutes_argv_placeholders() {
     let sb = Sandbox::new();
     let out = sb
@@ -213,6 +229,19 @@ fn run_ambiguous_selector_lists_tags_without_values() {
 }
 
 #[test]
+fn run_missing_selector_suggests_safe_discovery() {
+    let sb = Sandbox::new();
+    let out = sb
+        .cmd(true)
+        .args(["run", "NO_SUCH_KEY", "--", "true"])
+        .assert()
+        .code(2);
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(stderr.contains("agents-env ls NO_SUCH_KEY"));
+    assert!(!stderr.contains("tvly-aaaa1111bbbb2222"));
+}
+
+#[test]
 fn run_selector_with_tag_picks_account() {
     let sb = Sandbox::new();
     let out = sb
@@ -252,6 +281,23 @@ fn run_masks_short_secret() {
 }
 
 #[test]
+fn run_empty_secret_does_not_expand_output() {
+    let sb = Sandbox::new();
+    fs::write(
+        sb.home.path().join(".config/agents-env/global.env"),
+        "EMPTY=\"\" # blank\n",
+    )
+    .unwrap();
+    let out = sb
+        .cmd(true)
+        .args(["run", "EMPTY", "--", "sh", "-c", "printf ok"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert_eq!(stdout, "ok");
+}
+
+#[test]
 fn run_masks_overlapping_secret_no_suffix_leak() {
     // A is a prefix of B; printing B must mask the whole thing, not leak B's tail.
     let sb = Sandbox::new();
@@ -271,12 +317,15 @@ fn run_masks_overlapping_secret_no_suffix_leak() {
 }
 
 #[test]
-fn run_no_mask_refused_in_agent_mode() {
-    let sb = Sandbox::new();
-    sb.cmd(true)
-        .args(["run", "--no-mask", "TAVILY_API_KEY", "--", "true"])
-        .assert()
-        .code(2);
+fn builtin_agent_markers_refuse_no_mask() {
+    for marker in AI_MARKERS {
+        let sb = Sandbox::new();
+        sb.cmd(false)
+            .env(marker, "1")
+            .args(["run", "--no-mask", "TAVILY_API_KEY", "--", "true"])
+            .assert()
+            .code(2);
+    }
 }
 
 #[test]

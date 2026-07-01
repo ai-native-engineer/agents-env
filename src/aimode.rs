@@ -6,17 +6,23 @@
 
 /// Environment variable names that mark an AI-agent environment.
 ///
-/// - Claude Code injects `CLAUDECODE` / `CLAUDE_CODE_ENTRYPOINT` / `AI_AGENT`
-///   into every shell it spawns.
+/// - Claude Code injects `CLAUDECODE` into spawned subprocesses; newer
+///   versions also set the more specific `CLAUDE_CODE_CHILD_SESSION`.
+///   `CLAUDE_CODE_ENTRYPOINT` and `AI_AGENT` are kept for existing harnesses.
 /// - OpenAI Codex sets `CODEX_SANDBOX` (e.g. `seatbelt`) on commands run inside
 ///   its sandbox. Caveat: with the sandbox bypassed it may be absent — set
 ///   `AGENTS_ENV_AGENT_MODE=1` in that config to stay safe.
 /// - `AGENTS_ENV_AGENT_MODE` lets any other harness opt in explicitly.
 ///
+/// Do not add guessed tool-specific markers here. If a coding assistant has no
+/// verified stable child-process marker, document `AGENTS_ENV_AGENT_MODE=1` or
+/// `markers=` instead.
+///
 /// Extra markers can be added without recompiling via a `markers=A,B,C` line in
 /// `~/.config/agents-env/config`.
 pub const MARKERS: &[&str] = &[
     "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
     "CLAUDE_CODE_ENTRYPOINT",
     "AI_AGENT",
     "CODEX_SANDBOX",
@@ -27,7 +33,10 @@ pub fn agent_mode() -> bool {
     let builtin = MARKERS
         .iter()
         .any(|m| std::env::var_os(m).is_some_and(|v| !v.is_empty()));
-    builtin || extra_markers().iter().any(|m| std::env::var_os(m).is_some_and(|v| !v.is_empty()))
+    builtin
+        || extra_markers()
+            .iter()
+            .any(|m| std::env::var_os(m).is_some_and(|v| !v.is_empty()))
 }
 
 /// User-configured extra markers from `markers=` in the config file.

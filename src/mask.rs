@@ -111,10 +111,11 @@ pub fn run(
         libc::signal(libc::SIGINT, libc::SIG_IGN);
     }
 
-    // Fast path only when masking is off. When masking is on we always pump,
-    // even with an empty pattern set (a passthrough), so the unfiltered branch
-    // can never be reached in agent mode.
-    if !mask {
+    let mask_values: Vec<_> = mask_values.iter().filter(|(_, v)| !v.is_empty()).collect();
+
+    // Fast path when masking is off, or when there is no non-empty value to
+    // mask. Empty values have no plaintext fragment to leak.
+    if !mask || mask_values.is_empty() {
         return match cmd.status() {
             Ok(s) => exit_code(s),
             Err(e) => {
