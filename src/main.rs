@@ -314,7 +314,8 @@ fn cmd_run(cli: &Cli, selectors: &[String], all: bool, no_mask: bool, command: &
 
     // Mask set: injected values (ALWAYS, any length — a leak here is the value
     // the agent asked to use) ∪ ambient values from the global store and local
-    // scope (length-floored to avoid over-masking common short strings).
+    // scope ∪ session-marker values (length-floored to avoid over-masking
+    // common short strings).
     let mut mask_values: Vec<(String, String)> = inject.clone();
     let mut ambient: Vec<(String, String)> = Vec::new();
     if is_local {
@@ -333,6 +334,7 @@ fn cmd_run(cli: &Cli, selectors: &[String], all: bool, no_mask: bool, command: &
     }
     ambient.retain(|(_, v)| v.len() >= 6);
     mask_values.extend(ambient);
+    mask_values.extend(aimode::masked_marker_values());
     // Order-preserving dedup by value: injected entries come first, so an
     // injected short secret is never the one dropped.
     {

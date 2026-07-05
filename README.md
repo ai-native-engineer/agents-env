@@ -26,7 +26,7 @@ agents-env run TAVILY_API_KEY@work -- curl -H "Authorization: Bearer {{TAVILY_AP
 
 - **출력 마스킹**: 주입한 시크릿이 자식의 stdout/stderr에 나타나면 실시간으로 `[masked:KEY]`로 치환한다. `doppler run`·`infisical run`은 주입만 하고 출력은 막지 않는다.
 - **값 비경유 복사**: `copy`는 전역 store의 시크릿을 로컬 `.env`로 옮기되, 값이 에이전트 컨텍스트를 거치지 않는다.
-- **에이전트 모드 감지**: 검증된 런타임 마커가 있는 Claude Code와 Codex sandbox는 자동 인식하고, 다른 어시스턴트는 `AGENTS_ENV_AGENT_MODE=1` 또는 `markers=`로 명시 opt-in한다.
+- **에이전트 모드 감지**: 검증된 런타임 마커가 있는 Claude Code, Codex sandbox, Hermes Agent는 자동 인식하고, 다른 어시스턴트는 `AGENTS_ENV_AGENT_MODE=1` 또는 `markers=`로 명시 opt-in한다.
 - **비대칭 쓰기 가드**: 사람이 관리하는 전역 마스터 `.env`는 이 도구로 수정할 수 없다.
 
 ## 동작 방식
@@ -85,6 +85,7 @@ agents-env copy NOTION_API_KEY@demodev --to .env.local
 |---|---|
 | Claude Code | 자동 감지: `CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, 기존 `CLAUDE_CODE_ENTRYPOINT`/`AI_AGENT`. |
 | OpenAI Codex CLI | 자동 감지: sandbox 명령의 `CODEX_SANDBOX`. sandbox를 우회하면 opt-in 필요. |
+| Hermes Agent | 자동 감지: gateway/tool-run 자식 명령의 `HERMES_SESSION_ID` 또는 `HERMES_SESSION_KEY`. |
 | Google Gemini CLI | opt-in: 안정적인 자식 프로세스 마커 미확인. |
 | Google Antigravity CLI | opt-in: 안정적인 자식 프로세스 마커 미확인. |
 | Cursor CLI | opt-in: `cursor-agent` 실행 자체와 에이전트가 실행한 자식 명령을 구분하는 안정 마커 미확인. |

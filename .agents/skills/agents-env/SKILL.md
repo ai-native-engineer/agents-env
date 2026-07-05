@@ -45,6 +45,7 @@ Agent mode is automatic only for verified runtime markers:
 |---|---|
 | Claude Code | Auto-detect: `CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, legacy `CLAUDE_CODE_ENTRYPOINT`, or generic `AI_AGENT`. |
 | OpenAI Codex CLI | Auto-detect in sandboxed commands through `CODEX_SANDBOX`; opt in if sandboxing is bypassed. |
+| Hermes Agent | Auto-detect through `HERMES_SESSION_ID` or `HERMES_SESSION_KEY` in gateway/tool-run child commands. |
 | Google Gemini CLI | Opt in with `AGENTS_ENV_AGENT_MODE=1` or a user-owned `markers=` entry. |
 | Google Antigravity CLI | Opt in with `AGENTS_ENV_AGENT_MODE=1` or `markers=`. |
 | Cursor CLI | Opt in; no stable child-command marker is documented. |

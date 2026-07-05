@@ -12,6 +12,8 @@
 /// - OpenAI Codex sets `CODEX_SANDBOX` (e.g. `seatbelt`) on commands run inside
 ///   its sandbox. Caveat: with the sandbox bypassed it may be absent — set
 ///   `AGENTS_ENV_AGENT_MODE=1` in that config to stay safe.
+/// - Hermes Agent sets `HERMES_SESSION_ID`/`HERMES_SESSION_KEY` for gateway and
+///   tool-run child commands.
 /// - `AGENTS_ENV_AGENT_MODE` lets any other harness opt in explicitly.
 ///
 /// Do not add guessed tool-specific markers here. If a coding assistant has no
@@ -26,8 +28,14 @@ pub const MARKERS: &[&str] = &[
     "CLAUDE_CODE_ENTRYPOINT",
     "AI_AGENT",
     "CODEX_SANDBOX",
+    "HERMES_SESSION_ID",
+    "HERMES_SESSION_KEY",
     "AGENTS_ENV_AGENT_MODE",
 ];
+
+/// Agent markers whose values may carry session metadata and should be masked
+/// if a wrapped child prints its inherited environment.
+pub const MASKED_MARKERS: &[&str] = &["HERMES_SESSION_ID", "HERMES_SESSION_KEY"];
 
 pub fn agent_mode() -> bool {
     let builtin = MARKERS
@@ -37,6 +45,18 @@ pub fn agent_mode() -> bool {
         || extra_markers()
             .iter()
             .any(|m| std::env::var_os(m).is_some_and(|v| !v.is_empty()))
+}
+
+pub fn masked_marker_values() -> Vec<(String, String)> {
+    MASKED_MARKERS
+        .iter()
+        .filter_map(|m| {
+            std::env::var(m)
+                .ok()
+                .filter(|v| v.len() >= 6)
+                .map(|v| ((*m).to_string(), v))
+        })
+        .collect()
 }
 
 /// User-configured extra markers from `markers=` in the config file.
