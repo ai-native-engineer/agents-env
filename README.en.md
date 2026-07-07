@@ -26,7 +26,7 @@ There is no shortage of env and secret tools, but few keep the value out of the 
 
 - **Output masking** — when an injected secret appears in the child's stdout/stderr, it is replaced with `[masked:KEY]` in real time. `doppler run` and `infisical run` inject but leave the output untouched.
 - **Value-free copy** — `copy` moves a secret from the global store into a local `.env` without the value passing through the agent's context.
-- **Agent-mode detection** — it auto-detects Claude Code and Codex sandbox from verified runtime markers; other assistants opt in with `AGENTS_ENV_AGENT_MODE=1` or `markers=`.
+- **Agent-mode detection** — it auto-detects Claude Code, Codex sandbox, and Hermes Agent from verified runtime markers; other assistants opt in with `AGENTS_ENV_AGENT_MODE=1` or `markers=`.
 - **Asymmetric write guard** — the human-managed global master `.env` cannot be modified through this tool.
 
 ## How it works
@@ -85,6 +85,7 @@ Auto-detection is enabled only when a stable child-process marker is verified fr
 |---|---|
 | Claude Code | Auto-detect: `CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, and existing `CLAUDE_CODE_ENTRYPOINT`/`AI_AGENT`. |
 | OpenAI Codex CLI | Auto-detect: `CODEX_SANDBOX` in sandboxed commands. If you bypass the sandbox, opt in explicitly. |
+| Hermes Agent | Auto-detect: `HERMES_SESSION_ID` or `HERMES_SESSION_KEY` in gateway/tool-run child commands. |
 | Google Gemini CLI | Opt-in: no stable child-process marker verified. |
 | Google Antigravity CLI | Opt-in: no stable child-process marker verified. |
 | Cursor CLI | Opt-in: no stable marker verified that distinguishes `cursor-agent` itself from commands it runs. |

@@ -12,6 +12,8 @@ const AI_MARKERS: &[&str] = &[
     "CLAUDE_CODE_ENTRYPOINT",
     "AI_AGENT",
     "CODEX_SANDBOX",
+    "HERMES_SESSION_ID",
+    "HERMES_SESSION_KEY",
     "AGENTS_ENV_AGENT_MODE",
 ];
 
@@ -163,6 +165,28 @@ fn run_masks_stderr_and_other_global_values() {
 }
 
 #[test]
+fn run_masks_hermes_session_marker_values() {
+    let sb = Sandbox::new();
+    let marker = "agent:main:discord:thread:sensitive-session-key";
+    let out = sb
+        .cmd(false)
+        .env("HERMES_SESSION_KEY", marker)
+        .args([
+            "run",
+            "TAVILY_API_KEY",
+            "--",
+            "sh",
+            "-c",
+            "echo marker=$HERMES_SESSION_KEY",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("marker=[masked:HERMES_SESSION_KEY]"));
+    assert!(!stdout.contains(marker));
+}
+
+#[test]
 fn local_run_still_masks_global_values() {
     let sb = Sandbox::new();
     fs::write(sb.cwd.path().join(".env"), "LOCAL_KEY=\"local-secret-123\"\n").unwrap();
@@ -212,6 +236,28 @@ fn run_propagates_exit_code() {
         .args(["run", "TAVILY_API_KEY", "--", "sh", "-c", "exit 7"])
         .assert()
         .code(7);
+}
+
+#[test]
+fn run_child_still_receives_sigint() {
+    let sb = Sandbox::new();
+    let out = sb
+        .cmd(true)
+        .args([
+            "run",
+            "TAVILY_API_KEY",
+            "--",
+            "sh",
+            "-c",
+            "kill -INT $$; echo survived",
+        ])
+        .assert()
+        .code(130);
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(
+        !stdout.contains("survived"),
+        "child ignored SIGINT: {stdout}"
+    );
 }
 
 #[test]
@@ -410,7 +456,7 @@ fn set_warns_on_credential_looking_value() {
     let sb = Sandbox::new();
     let out = sb
         .cmd(true)
-        .args(["set", "K", "sk-abcdef123456"])
+        .args(["set", "K", "sk-test-ABC123"])
         .assert()
         .success();
     let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();

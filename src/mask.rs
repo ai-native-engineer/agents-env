@@ -9,6 +9,8 @@
 
 use aho_corasick::{AhoCorasick, MatchKind};
 use std::io::{self, Read, Write};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::thread;
@@ -107,16 +109,19 @@ pub fn run(
     }
 
     // Let Ctrl-C go to the child (same process group); the wrapper waits.
-    unsafe {
-        libc::signal(libc::SIGINT, libc::SIG_IGN);
-    }
+    // `signal(SIG_IGN)` is inherited across exec, so explicitly reset the child
+    // to the default disposition before it starts. Otherwise `kill -INT $$` or a
+    // terminal Ctrl-C can be ignored by the wrapped command.
+    let prev_sigint = prepare_child_sigint(&mut cmd);
 
     let mask_values: Vec<_> = mask_values.iter().filter(|(_, v)| !v.is_empty()).collect();
 
     // Fast path when masking is off, or when there is no non-empty value to
     // mask. Empty values have no plaintext fragment to leak.
     if !mask || mask_values.is_empty() {
-        return match cmd.status() {
+        let status = cmd.status();
+        restore_sigint(prev_sigint);
+        return match status {
             Ok(s) => exit_code(s),
             Err(e) => {
                 eprintln!("agents-env: failed to run '{}': {e}", argv[0]);
@@ -129,6 +134,7 @@ pub fn run(
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
+            restore_sigint(prev_sigint);
             eprintln!("agents-env: failed to run '{}': {e}", argv[0]);
             return 127;
         }
@@ -162,7 +168,9 @@ pub fn run(
 
     let _ = t_out.join();
     let _ = t_err.join();
-    match child.wait() {
+    let status = child.wait();
+    restore_sigint(prev_sigint);
+    match status {
         Ok(s) => exit_code(s),
         Err(e) => {
             eprintln!("agents-env: wait failed: {e}");
@@ -170,6 +178,39 @@ pub fn run(
         }
     }
 }
+
+#[cfg(unix)]
+type SigHandler = libc::sighandler_t;
+
+#[cfg(unix)]
+fn prepare_child_sigint(cmd: &mut Command) -> SigHandler {
+    unsafe {
+        let prev = libc::signal(libc::SIGINT, libc::SIG_IGN);
+        let child_sigint = if prev == libc::SIG_IGN {
+            libc::SIG_IGN
+        } else {
+            libc::SIG_DFL
+        };
+        cmd.pre_exec(move || {
+            libc::signal(libc::SIGINT, child_sigint);
+            Ok(())
+        });
+        prev
+    }
+}
+
+#[cfg(unix)]
+fn restore_sigint(prev: SigHandler) {
+    unsafe {
+        libc::signal(libc::SIGINT, prev);
+    }
+}
+
+#[cfg(not(unix))]
+fn prepare_child_sigint(_cmd: &mut Command) {}
+
+#[cfg(not(unix))]
+fn restore_sigint(_: ()) {}
 
 fn exit_code(s: std::process::ExitStatus) -> i32 {
     use std::os::unix::process::ExitStatusExt;
