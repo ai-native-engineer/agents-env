@@ -26,7 +26,7 @@ There is no shortage of env and secret tools, but few keep the value out of the 
 
 - **Output masking** — when an injected secret appears in the child's stdout/stderr, it is replaced with `[masked:KEY]` in real time. `doppler run` and `infisical run` inject but leave the output untouched.
 - **Value-free copy** — `copy` moves a secret from the global store into a local `.env` without the value passing through the agent's context.
-- **Agent-mode detection** — it auto-detects Claude Code and Codex sandbox from verified runtime markers; other assistants opt in with `AGENTS_ENV_AGENT_MODE=1` or `markers=`.
+- **Agent-mode detection** — it auto-detects Grok, Codex, OpenCode, Claude Code, and AGY from runtime markers or parent CLI names; other assistants opt in with `AGENTS_ENV_AGENT_MODE=1` or `markers=`.
 - **Asymmetric write guard** — the human-managed global master `.env` cannot be modified through this tool.
 
 ## How it works
@@ -79,17 +79,18 @@ Masking is defense in depth, not a sandbox. It catches a secret the child prints
 
 ### Coding Assistant Support
 
-Auto-detection is enabled only when a stable child-process marker is verified from official docs, local CLI behavior, or public source. Tools without that marker are supported by explicit opt-in, so values still stay hidden once you enable agent mode.
+Auto-detection uses environment variables verified from official docs, local CLI behavior, or public source, plus CLI names in the Unix parent-process chain. It checks at most three ancestors; renamed or more deeply wrapped launches use explicit opt-in.
 
 | Tool | Support decision |
 |---|---|
-| Claude Code | Auto-detect: `CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, and existing `CLAUDE_CODE_ENTRYPOINT`/`AI_AGENT`. |
-| OpenAI Codex CLI | Auto-detect: `CODEX_SANDBOX` in sandboxed commands. If you bypass the sandbox, opt in explicitly. |
+| xAI Grok CLI | Auto-detect: `grok` in the Unix parent-process chain. |
+| Claude Code | Auto-detect: Claude environment markers or `claude` in the Unix parent-process chain. |
+| OpenAI Codex CLI | Auto-detect: `CODEX_SANDBOX` or `codex` in the Unix parent-process chain, including sandbox bypass. |
+| OpenCode | Auto-detect: `OPENCODE` or `opencode` in the Unix parent-process chain. |
+| Google Antigravity CLI | Auto-detect: `ANTIGRAVITY_CONVERSATION_ID` or `agy` in the Unix parent-process chain. |
 | Google Gemini CLI | Opt-in: no stable child-process marker verified. |
-| Google Antigravity CLI | Opt-in: no stable child-process marker verified. |
 | Cursor CLI | Opt-in: no stable marker verified that distinguishes `cursor-agent` itself from commands it runs. |
 | GitHub Copilot CLI | Opt-in: public CLI environment settings do not expose a stable child-process marker. |
-| OpenCode | Opt-in: public CLI/config docs do not expose a stable child-process marker. |
 | Kiro CLI / Amazon Q CLI successor | Opt-in: Amazon Q CLI has become Kiro CLI; no stable child-process marker verified. |
 | Aider | Opt-in: no stable child-process marker verified. |
 | Qwen Code | Opt-in: no stable child-process marker verified. |
@@ -106,8 +107,6 @@ You can also wrap one launch:
 
 ```
 AGENTS_ENV_AGENT_MODE=1 cursor-agent
-AGENTS_ENV_AGENT_MODE=1 opencode
-AGENTS_ENV_AGENT_MODE=1 agy
 AGENTS_ENV_AGENT_MODE=1 qwen
 AGENTS_ENV_AGENT_MODE=1 copilot
 AGENTS_ENV_AGENT_MODE=1 gemini
@@ -124,7 +123,7 @@ printf '\nmarkers=MY_AGENT_MODE\n' >> ~/.config/agents-env/config
 MY_AGENT_MODE=1 agents-env get TAVILY
 ```
 
-- **Detection is a signal, not a barrier.** Mode is decided from env markers, so an agent can remove them (`env -u CLAUDECODE …`) or pass `--no-mask` to force human mode. The intended threat is an honest agent that should not accidentally log a secret. A malicious agent can read `~/.dotfiles/.env` directly, which is for the deny rules to stop, not this tool.
+- **Detection is a signal, not a barrier.** Mode is decided from env markers and nearby parent CLI names, so an agent can reach human mode by hiding both. The intended threat is an honest agent that should not accidentally log a secret. Direct store access by a malicious agent is for the deny rules to stop, not this tool.
 - **`{{KEY}}` is visible to a same-user `ps`.** The value lands in the child's argv, where another process of the same user can read it. On a shared machine, use env injection instead of `{{KEY}}` for sensitive values.
 - **Parent-directory-swap TOCTOU.** The guard canonicalizes cwd and uses `O_NOFOLLOW` on the temp file, but a same-user attacker who renames a parent directory mid-write could still redirect it. Closing this fully needs directory-fd (`openat`/`renameat`) writes, planned for a later version. It is unreachable without local same-user write access, and with that access the secrets are already exposed.
 - **Line endings normalize to LF.** Round-trips preserve comments, order, and spacing, but a CRLF file is rewritten with LF and gains a trailing newline.

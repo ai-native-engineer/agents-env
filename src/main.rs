@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use store::{EnvFile, SelectError};
 
 const AGENT_GUIDE: &str = "\
-AGENT MODE (auto: Claude Code markers, Codex sandbox; opt-in: AGENTS_ENV_AGENT_MODE / markers=):
+AGENT MODE (auto on Unix: Grok, Codex, OpenCode, Claude Code, AGY; opt-in: AGENTS_ENV_AGENT_MODE / markers=):
   secret values are never printed — work with key names only.
 
   agents-env get TAVILY                       discover keys (values stay hidden)
@@ -27,9 +27,9 @@ AGENT MODE (auto: Claude Code markers, Codex sandbox; opt-in: AGENTS_ENV_AGENT_M
   inline '# comment' in the env file). The global store is read-only by
   design: no flag of set/copy can reach it. Humans edit it with `agents-env edit`.
 
-  Other assistants without a verified stable marker are supported by explicit
+  Other assistants and renamed/deeply wrapped CLIs are supported by explicit
   opt-in: launch them with AGENTS_ENV_AGENT_MODE=1, or add a marker you set
-  yourself via `markers=MY_AGENT_MODE` in ~/.config/agents-env/config.
+  via `markers=MY_AGENT_MODE` in ~/.config/agents-env/config.
 ";
 
 #[derive(Parser)]

@@ -10,7 +10,7 @@
     {
       "name": "agents-env",
       "source": "./",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "Skill that teaches an agent to use the agents-env CLI: inject secrets into commands without the value reaching the agent's context, copy global secrets into a project .env value-free, and discover keys without printing them.",
       "category": "security",
       "author": {

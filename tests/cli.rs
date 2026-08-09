@@ -12,8 +12,13 @@ const AI_MARKERS: &[&str] = &[
     "CLAUDE_CODE_ENTRYPOINT",
     "AI_AGENT",
     "CODEX_SANDBOX",
+    "OPENCODE",
+    "ANTIGRAVITY_CONVERSATION_ID",
     "AGENTS_ENV_AGENT_MODE",
 ];
+
+#[cfg(unix)]
+const AI_CLI_NAMES: &[&str] = &["grok", "codex", "opencode", "claude", "agy"];
 
 const GLOBAL: &str = r#"# global store fixture
 TAVILY_API_KEY="tvly-aaaa1111bbbb2222" # personal
@@ -56,6 +61,23 @@ impl Sandbox {
         c
     }
 
+    #[cfg(unix)]
+    fn via_agent_cli(&self, name: &str, script: &str) -> std::process::Output {
+        use std::os::unix::process::CommandExt;
+
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .arg0(name)
+            .args(["-c", script, name, env!("CARGO_BIN_EXE_agents-env")])
+            .current_dir(self.cwd.path())
+            .env("HOME", self.home.path())
+            .env("PATH", std::env::var("PATH").unwrap());
+        for marker in AI_MARKERS {
+            command.env_remove(marker);
+        }
+        command.output().unwrap()
+    }
+
     fn local(&self, name: &str) -> String {
         fs::read_to_string(self.cwd.path().join(name)).unwrap()
     }
@@ -85,6 +107,30 @@ fn builtin_agent_markers_hide_get_values() {
         assert!(!stdout.contains("tvly-aaaa1111bbbb2222"), "marker={marker}");
         assert!(stdout.contains("TAVILY_API_KEY"), "marker={marker}");
         assert!(stdout.contains("[set,"), "marker={marker}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_cli_ancestors_enforce_agent_mode() {
+    for name in AI_CLI_NAMES {
+        let sb = Sandbox::new();
+        let output = sb.via_agent_cli(
+            name,
+            "\"$1\" get tavily; status=$?; exit $status",
+        );
+        assert!(output.status.success(), "name={name}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(!stdout.contains("tvly-aaaa1111bbbb2222"), "name={name}");
+        assert!(stdout.contains("[set,"), "name={name}");
+
+        let output = sb.via_agent_cli(
+            name,
+            "\"$1\" run --no-mask TAVILY_API_KEY -- true; status=$?; exit $status",
+        );
+        assert_eq!(output.status.code(), Some(2), "name={name}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("--no-mask is not allowed"), "name={name}");
     }
 }
 

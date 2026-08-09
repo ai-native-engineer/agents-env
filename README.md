@@ -26,7 +26,7 @@ agents-env run TAVILY_API_KEY@work -- curl -H "Authorization: Bearer {{TAVILY_AP
 
 - **출력 마스킹**: 주입한 시크릿이 자식의 stdout/stderr에 나타나면 실시간으로 `[masked:KEY]`로 치환한다. `doppler run`·`infisical run`은 주입만 하고 출력은 막지 않는다.
 - **값 비경유 복사**: `copy`는 전역 store의 시크릿을 로컬 `.env`로 옮기되, 값이 에이전트 컨텍스트를 거치지 않는다.
-- **에이전트 모드 감지**: 검증된 런타임 마커가 있는 Claude Code와 Codex sandbox는 자동 인식하고, 다른 어시스턴트는 `AGENTS_ENV_AGENT_MODE=1` 또는 `markers=`로 명시 opt-in한다.
+- **에이전트 모드 감지**: Grok, Codex, OpenCode, Claude Code, AGY는 런타임 마커나 부모 CLI 이름으로 자동 인식하고, 다른 어시스턴트는 `AGENTS_ENV_AGENT_MODE=1` 또는 `markers=`로 명시 opt-in한다.
 - **비대칭 쓰기 가드**: 사람이 관리하는 전역 마스터 `.env`는 이 도구로 수정할 수 없다.
 
 ## 동작 방식
@@ -79,17 +79,18 @@ agents-env copy NOTION_API_KEY@demodev --to .env.local
 
 ### 코딩 어시스턴트 지원
 
-자동 감지는 공식 문서, 로컬 CLI 동작, 또는 공개 소스에서 안정적인 자식 프로세스 마커가 확인된 경우에만 켠다. 확인되지 않은 도구는 값을 안전하게 숨길 수 있도록 명시 opt-in을 지원한다.
+자동 감지는 공식 문서, 로컬 CLI 동작, 공개 소스에서 확인된 환경변수와 Unix 부모 프로세스의 CLI 이름을 사용한다. 부모 프로세스는 현재 명령에서 최대 3단계까지만 확인하며, 이름을 바꾸거나 더 깊게 감싼 실행은 명시 opt-in으로 처리한다.
 
 | 도구 | 지원 결정 |
 |---|---|
-| Claude Code | 자동 감지: `CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, 기존 `CLAUDE_CODE_ENTRYPOINT`/`AI_AGENT`. |
-| OpenAI Codex CLI | 자동 감지: sandbox 명령의 `CODEX_SANDBOX`. sandbox를 우회하면 opt-in 필요. |
+| xAI Grok CLI | 자동 감지: Unix 부모 프로세스의 `grok`. |
+| Claude Code | 자동 감지: Claude 환경변수 또는 Unix 부모 프로세스의 `claude`. |
+| OpenAI Codex CLI | 자동 감지: `CODEX_SANDBOX` 또는 Unix 부모 프로세스의 `codex`. sandbox 우회도 부모 감지로 처리. |
+| OpenCode | 자동 감지: `OPENCODE` 또는 Unix 부모 프로세스의 `opencode`. |
+| Google Antigravity CLI | 자동 감지: `ANTIGRAVITY_CONVERSATION_ID` 또는 Unix 부모 프로세스의 `agy`. |
 | Google Gemini CLI | opt-in: 안정적인 자식 프로세스 마커 미확인. |
-| Google Antigravity CLI | opt-in: 안정적인 자식 프로세스 마커 미확인. |
 | Cursor CLI | opt-in: `cursor-agent` 실행 자체와 에이전트가 실행한 자식 명령을 구분하는 안정 마커 미확인. |
 | GitHub Copilot CLI | opt-in: 공개 CLI 환경 설정에는 안정적인 자식 프로세스 마커 미확인. |
-| OpenCode | opt-in: 공개 config/CLI 문서에는 안정적인 자식 프로세스 마커 미확인. |
 | Kiro CLI / Amazon Q CLI successor | opt-in: Amazon Q CLI는 Kiro CLI로 이전됐고, 안정적인 자식 프로세스 마커 미확인. |
 | Aider | opt-in: 안정적인 자식 프로세스 마커 미확인. |
 | Qwen Code | opt-in: 안정적인 자식 프로세스 마커 미확인. |
@@ -106,8 +107,6 @@ export AGENTS_ENV_AGENT_MODE=1
 
 ```
 AGENTS_ENV_AGENT_MODE=1 cursor-agent
-AGENTS_ENV_AGENT_MODE=1 opencode
-AGENTS_ENV_AGENT_MODE=1 agy
 AGENTS_ENV_AGENT_MODE=1 qwen
 AGENTS_ENV_AGENT_MODE=1 copilot
 AGENTS_ENV_AGENT_MODE=1 gemini
@@ -124,7 +123,7 @@ printf '\nmarkers=MY_AGENT_MODE\n' >> ~/.config/agents-env/config
 MY_AGENT_MODE=1 agents-env get TAVILY
 ```
 
-- **감지는 신호이지 차단막이 아니다.** 모드는 env 마커로 판단하므로, 에이전트가 마커를 제거하거나(`env -u CLAUDECODE …`) `--no-mask`를 써서 사람 모드를 강제할 수 있다. 대상 위협은 실수로 시크릿을 로깅하면 안 되는 정직한 에이전트다. 악의적 에이전트는 `~/.dotfiles/.env`를 직접 읽을 수 있으며, 그것은 이 도구가 아니라 deny 규칙이 막을 영역이다.
+- **감지는 신호이지 차단막이 아니다.** 모드는 env 마커와 가까운 부모 CLI 이름으로 판단하므로, 에이전트가 마커를 제거하고 CLI 이름도 숨기면 사람 모드가 될 수 있다. 대상 위협은 실수로 시크릿을 로깅하면 안 되는 정직한 에이전트다. 악의적 에이전트가 store를 직접 읽는 것은 이 도구가 아니라 deny 규칙이 막을 영역이다.
 - **`{{KEY}}`는 같은 사용자의 `ps`에 노출된다.** 값이 자식 argv에 들어가 같은 사용자의 다른 프로세스가 읽을 수 있다. 공유 머신에서 민감한 값은 `{{KEY}}` 대신 env 주입을 사용한다.
 - **부모 디렉토리 스왑 TOCTOU.** 가드가 cwd를 canonicalize하고 임시 파일에 `O_NOFOLLOW`를 쓰지만, 같은 사용자 권한의 공격자가 쓰기 도중 부모 디렉토리를 rename하면 우회할 수 있다. 완전한 차단은 디렉토리 fd(`openat`/`renameat`) 방식이 필요하며 다음 버전에서 다룬다. 로컬 동일 사용자 쓰기 권한 없이는 도달할 수 없고, 그 권한이 있다면 시크릿은 이미 노출된 상태다.
 - **줄 끝은 LF로 정규화된다.** 라운드트립은 주석·순서·간격을 보존하지만 CRLF 파일은 LF로 다시 쓰이고 끝에 개행이 추가된다.

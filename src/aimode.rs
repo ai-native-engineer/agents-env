@@ -10,8 +10,9 @@
 ///   versions also set the more specific `CLAUDE_CODE_CHILD_SESSION`.
 ///   `CLAUDE_CODE_ENTRYPOINT` and `AI_AGENT` are kept for existing harnesses.
 /// - OpenAI Codex sets `CODEX_SANDBOX` (e.g. `seatbelt`) on commands run inside
-///   its sandbox. Caveat: with the sandbox bypassed it may be absent — set
-///   `AGENTS_ENV_AGENT_MODE=1` in that config to stay safe.
+///   its sandbox.
+/// - OpenCode sets `OPENCODE=1`; Antigravity supplies a conversation ID to
+///   terminal commands.
 /// - `AGENTS_ENV_AGENT_MODE` lets any other harness opt in explicitly.
 ///
 /// Do not add guessed tool-specific markers here. If a coding assistant has no
@@ -26,8 +27,12 @@ pub const MARKERS: &[&str] = &[
     "CLAUDE_CODE_ENTRYPOINT",
     "AI_AGENT",
     "CODEX_SANDBOX",
+    "OPENCODE",
+    "ANTIGRAVITY_CONVERSATION_ID",
     "AGENTS_ENV_AGENT_MODE",
 ];
+
+const AGENT_CLI_NAMES: &[&str] = &["grok", "codex", "opencode", "claude", "agy"];
 
 pub fn agent_mode() -> bool {
     let builtin = MARKERS
@@ -37,6 +42,49 @@ pub fn agent_mode() -> bool {
         || extra_markers()
             .iter()
             .any(|m| std::env::var_os(m).is_some_and(|v| !v.is_empty()))
+        || agent_cli_ancestor()
+}
+
+#[cfg(unix)]
+fn agent_cli_ancestor() -> bool {
+    let mut pid = std::process::id();
+    // ponytail: three levels cover CLI -> shell -> command; use an env marker
+    // for renamed, detached, or more deeply wrapped launchers.
+    for _ in 0..3 {
+        let Ok(output) = std::process::Command::new("ps")
+            .args(["-o", "ppid=,args=", "-p"])
+            .arg(pid.to_string())
+            .output()
+        else {
+            return false;
+        };
+        if !output.status.success() {
+            return false;
+        }
+        let Ok(process) = std::str::from_utf8(&output.stdout) else {
+            return false;
+        };
+        let mut fields = process.split_whitespace();
+        let Some(parent) = fields.next().and_then(|s| s.parse::<u32>().ok()) else {
+            return false;
+        };
+        let Some(argv0) = fields.next() else {
+            return false;
+        };
+        let name = std::path::Path::new(argv0)
+            .file_name()
+            .and_then(|s| s.to_str());
+        if name.is_some_and(|name| AGENT_CLI_NAMES.contains(&name)) {
+            return true;
+        }
+        pid = parent;
+    }
+    false
+}
+
+#[cfg(not(unix))]
+fn agent_cli_ancestor() -> bool {
+    false
 }
 
 /// User-configured extra markers from `markers=` in the config file.

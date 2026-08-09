@@ -33,23 +33,24 @@ mkdir -p ~/.config/agents-env
 
 Set `global_store=` to wherever the user keeps their master `.env` (ask if unsure;
 default when unset is `~/.config/agents-env/global.env`). Then `agents-env doctor`
-to confirm setup and check the harness deny rules. This works the same for Claude
-Code and Codex — only the optional plugin (`claude plugin install
+to confirm setup and check the harness deny rules. This works the same for Grok,
+Codex, OpenCode, Claude Code, and AGY — only the optional plugin (`claude plugin install
 agents-env@agents-env`) is Claude-specific.
 
 ## Assistant support
 
-Agent mode is automatic only for verified runtime markers:
+Agent mode is automatic from verified runtime markers and nearby Unix parent CLI names:
 
 | Assistant | Decision |
 |---|---|
-| Claude Code | Auto-detect: `CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, legacy `CLAUDE_CODE_ENTRYPOINT`, or generic `AI_AGENT`. |
-| OpenAI Codex CLI | Auto-detect in sandboxed commands through `CODEX_SANDBOX`; opt in if sandboxing is bypassed. |
+| xAI Grok CLI | Auto-detect from the `grok` parent CLI. |
+| Claude Code | Auto-detect from Claude markers or the `claude` parent CLI. |
+| OpenAI Codex CLI | Auto-detect from `CODEX_SANDBOX` or the `codex` parent CLI, including sandbox bypass. |
+| OpenCode | Auto-detect from `OPENCODE` or the `opencode` parent CLI. |
+| Google Antigravity CLI | Auto-detect from `ANTIGRAVITY_CONVERSATION_ID` or the `agy` parent CLI. |
 | Google Gemini CLI | Opt in with `AGENTS_ENV_AGENT_MODE=1` or a user-owned `markers=` entry. |
-| Google Antigravity CLI | Opt in with `AGENTS_ENV_AGENT_MODE=1` or `markers=`. |
 | Cursor CLI | Opt in; no stable child-command marker is documented. |
 | GitHub Copilot CLI | Opt in; no stable child-command marker is documented. |
-| OpenCode | Opt in; public CLI/config docs do not document a stable child-command marker. |
 | Kiro CLI / Amazon Q CLI successor | Opt in; Amazon Q CLI has become Kiro CLI, and no stable marker is documented. |
 | Aider | Opt in; no stable child-command marker is documented. |
 | Qwen Code | Opt in; no stable child-command marker is documented. |
@@ -66,8 +67,6 @@ Or wrap a single CLI launch:
 
 ```
 AGENTS_ENV_AGENT_MODE=1 cursor-agent
-AGENTS_ENV_AGENT_MODE=1 opencode
-AGENTS_ENV_AGENT_MODE=1 agy
 AGENTS_ENV_AGENT_MODE=1 qwen
 AGENTS_ENV_AGENT_MODE=1 copilot
 AGENTS_ENV_AGENT_MODE=1 gemini
