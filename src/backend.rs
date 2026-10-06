@@ -234,7 +234,7 @@ mod macos_keychain {
             without_user_interaction(|| {
                 self.provider
                     .search(&HashMap::new())
-                    .map_err(|_| StoreError::Unavailable("keychain access failed".into()))
+                    .map_err(map_keychain_error)
                     .map(|entries| {
                         entries
                             .into_iter()
@@ -249,7 +249,7 @@ mod macos_keychain {
                 let entry = self
                     .provider
                     .build(service, account, None)
-                    .map_err(|_| StoreError::Unavailable("keychain access failed".into()))?;
+                    .map_err(map_keychain_error)?;
                 entry.get_password().map_err(map_read_error)
             })
         }
@@ -260,9 +260,7 @@ mod macos_keychain {
                     .provider
                     .build(service, account, None)
                     .map_err(|_| StoreError::Unavailable("keychain access failed".into()))?;
-                entry
-                    .set_password(value)
-                    .map_err(|_| StoreError::Unavailable("keychain access failed".into()))
+                entry.set_password(value).map_err(map_keychain_error)
             })
         }
     }
@@ -348,9 +346,19 @@ mod macos_keychain {
     }
 
     fn map_read_error(error: KeyringError) -> StoreError {
+        map_keychain_error(error)
+    }
+
+    fn map_keychain_error(error: KeyringError) -> StoreError {
         match error {
             KeyringError::NoEntry => StoreError::NotFound("keychain entry".into()),
-            _ => StoreError::Unavailable("keychain access failed".into()),
+            KeyringError::NoStorageAccess(_) => {
+                StoreError::Unavailable("keychain storage access unavailable".into())
+            }
+            KeyringError::PlatformFailure(_) => {
+                StoreError::Unavailable("keychain platform access failed".into())
+            }
+            _ => StoreError::Unavailable("keychain operation failed".into()),
         }
     }
 
