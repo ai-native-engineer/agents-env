@@ -107,6 +107,15 @@ enum Cmd {
     Edit,
     /// Audit protection coverage: permissions, gitignore, backups, dup keys
     Doctor,
+    /// Import the file-backed global store into macOS Keychain explicitly
+    Migrate {
+        /// Migrate the global file into the macOS Keychain backend
+        #[arg(long)]
+        to_keychain: bool,
+        /// Show the metadata-only migration plan without writing Keychain items
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() {
@@ -128,6 +137,10 @@ fn main() {
         } => cmd_copy(selectors, to, rename.as_deref()),
         Cmd::Edit => cmd_edit(),
         Cmd::Doctor => cmd_doctor(),
+        Cmd::Migrate {
+            to_keychain,
+            dry_run,
+        } => cmd_migrate(*to_keychain, *dry_run),
     };
     std::process::exit(code);
 }
@@ -848,6 +861,117 @@ fn cmd_edit() -> i32 {
         }
     }
     0
+}
+
+fn cmd_migrate(to_keychain: bool, dry_run: bool) -> i32 {
+    if !to_keychain {
+        return fail(3, "specify --to-keychain to choose the migration target");
+    }
+    let source_path = config::global_store();
+    let source = match FileStore::load(&source_path) {
+        Ok(source) => source,
+        Err(error) => {
+            return fail(
+                1,
+                &format!(
+                    "cannot read migration source {}: {error}",
+                    source_path.display()
+                ),
+            );
+        }
+    };
+    let secrets = match source.resolve_all() {
+        Ok(secrets) => secrets,
+        Err(error) => return fail(2, &store_error_message(&error)),
+    };
+    if secrets.is_empty() {
+        return fail(1, "migration source has no entries");
+    }
+
+    let mut identities = std::collections::HashSet::new();
+    for secret in &secrets {
+        let identity = (
+            secret.key().to_ascii_lowercase(),
+            secret.tag().unwrap_or("").to_ascii_lowercase(),
+        );
+        if !identities.insert(identity) {
+            return fail(
+                2,
+                &format!(
+                    "migration source contains a duplicate key/tag identity for {}",
+                    secret.key()
+                ),
+            );
+        }
+    }
+
+    println!(
+        "migration plan: {} entries from {} -> macOS Keychain",
+        secrets.len(),
+        source_path.display()
+    );
+    for secret in &secrets {
+        println!(
+            "  {} ({})",
+            secret.key(),
+            secret.tag().unwrap_or("untagged")
+        );
+    }
+    if dry_run {
+        println!("dry run: no Keychain writes; source retained");
+        return 0;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let target = match backend::KeychainStore::new() {
+            Ok(target) => target,
+            Err(error) => return fail(2, &store_error_message(&error)),
+        };
+        let existing = match target.metadata(None) {
+            Ok(existing) => existing,
+            Err(error) => return fail(2, &store_error_message(&error)),
+        };
+        for secret in &secrets {
+            if existing.iter().any(|item| {
+                item.key().eq_ignore_ascii_case(secret.key())
+                    && item
+                        .tag()
+                        .unwrap_or("")
+                        .eq_ignore_ascii_case(secret.tag().unwrap_or(""))
+            }) {
+                return fail(
+                    2,
+                    &format!(
+                        "Keychain already contains key/tag identity for {}; source retained",
+                        secret.key()
+                    ),
+                );
+            }
+        }
+        for (index, secret) in secrets.iter().enumerate() {
+            if let Err(error) = target.set(secret.key(), secret.tag(), secret.value()) {
+                return fail(
+                    1,
+                    &format!(
+                        "migration stopped after {} entries: {}; source retained; remove partial Keychain entries before retry",
+                        index,
+                        store_error_message(&error)
+                    ),
+                );
+            }
+        }
+        println!(
+            "migration complete: {} entries written; source retained",
+            secrets.len()
+        );
+        0
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        fail(2, "Keychain migration requires macOS; source retained")
+    }
 }
 
 // ---------------------------------------------------------------- doctor

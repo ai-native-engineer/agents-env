@@ -692,6 +692,42 @@ fn invalid_backend_is_rejected_without_reading_the_store() {
     assert!(!stderr.contains("tvly-aaaa1111bbbb2222"));
 }
 
+#[test]
+fn migration_dry_run_is_metadata_only_and_preserves_source() {
+    let sb = Sandbox::new();
+    let out = sb
+        .cmd(true)
+        .args(["migrate", "--to-keychain", "--dry-run"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("migration plan"));
+    assert!(stdout.contains("TAVILY_API_KEY"));
+    assert!(!stdout.contains("tvly-aaaa1111bbbb2222"));
+    assert_eq!(fs::read_to_string(sb.global_path()).unwrap(), GLOBAL);
+}
+
+#[test]
+fn migration_requires_an_explicit_target() {
+    let sb = Sandbox::new();
+    sb.cmd(true).arg("migrate").assert().code(3);
+}
+
+#[test]
+fn migration_rejects_duplicate_key_tag_identity() {
+    let sb = Sandbox::new();
+    fs::write(sb.global_path(), "DUP=\"one\" # same\nDUP=\"two\" # same\n").unwrap();
+    let out = sb
+        .cmd(true)
+        .args(["migrate", "--to-keychain", "--dry-run"])
+        .assert()
+        .code(2);
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(stderr.contains("duplicate key/tag"));
+    assert!(!stderr.contains("one"));
+    assert!(!stderr.contains("two"));
+}
+
 // ---------------------------------------------------------------- local scope
 
 #[test]
