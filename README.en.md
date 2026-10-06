@@ -67,8 +67,9 @@ agents-env copy NOTION_API_KEY@demodev --to .env.local
 
 - No flag points the write target at the global scope.
 - File names must be a bare `.env`/`.env.*`. Path separators are rejected, which rules out `../`, absolute paths, and `.bak` targets.
+- `set` keys and `copy --as` names must match `[A-Za-z_][A-Za-z0-9_]*`, so newlines or extra assignments cannot be inserted into the file.
 - The target is refused if it is a symlink, has hard links, or is the same file as the global store.
-- Writing inside the global store's directory is refused.
+- Writing inside the global store's directory or any descendant is refused.
 - Inside a git repo, a secret-bearing `copy` target must be both untracked and gitignored. Otherwise it is a hard error (no override; fix `.gitignore`).
 
 Every write makes a `<file>.YYMMDD.bak` backup first. From the second write of the day onward it keeps that day's first backup, since the state before the day's work is the recovery point. It then writes to an `O_NOFOLLOW` temp file and renames it into place. Backups also start with `.env`, so one `.env*` gitignore line covers them.

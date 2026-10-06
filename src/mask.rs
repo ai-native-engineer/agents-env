@@ -111,6 +111,21 @@ pub fn run(
         libc::signal(libc::SIGINT, libc::SIG_IGN);
     }
 
+    // The wrapper ignores SIGINT while it waits so the terminal interrupt is
+    // handled by the child. Restore the default disposition after fork; signal
+    // dispositions are inherited across exec, and leaving SIG_IGN here would
+    // make `sleep`, shells, and other ordinary commands ignore Ctrl-C too.
+    #[cfg(unix)]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            if libc::signal(libc::SIGINT, libc::SIG_DFL) == libc::SIG_ERR {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
     let mask_values: Vec<_> = mask_values.iter().filter(|(_, v)| !v.is_empty()).collect();
 
     // Fast path when masking is off, or when there is no non-empty value to
@@ -214,7 +229,10 @@ mod tests {
 
     #[test]
     fn short_secret_is_masked() {
-        assert_eq!(mask_all(&[("PIN", "12345")], "pin=12345."), "pin=[masked:PIN].");
+        assert_eq!(
+            mask_all(&[("PIN", "12345")], "pin=12345."),
+            "pin=[masked:PIN]."
+        );
     }
 
     #[test]

@@ -38,6 +38,24 @@ pub enum SelectError {
     Ambiguous { key: String, tags: Vec<String> },
 }
 
+/// Validate a key before inserting it into an env file.
+///
+/// The parser accepts exactly this shell-style identifier grammar. Keeping the
+/// write-side check in the same module prevents a user-supplied key from
+/// injecting a newline, another assignment, or other raw file structure.
+pub fn validate_key(key: &str) -> Result<(), String> {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return Err("key must match [A-Za-z_][A-Za-z0-9_]*".to_string());
+    };
+    if !(first.is_ascii_alphabetic() || first == '_')
+        || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err(format!("'{key}': key must match [A-Za-z_][A-Za-z0-9_]*"));
+    }
+    Ok(())
+}
+
 impl EnvFile {
     pub fn load(path: &Path) -> io::Result<EnvFile> {
         let text = fs::read_to_string(path)?;
@@ -398,7 +416,10 @@ mod tests {
     #[test]
     fn newline_value_round_trips_without_breaking_structure() {
         let quoted = quote_value("a\nb\tc");
-        assert!(!quoted.contains('\n'), "must not embed a real newline: {quoted}");
+        assert!(
+            !quoted.contains('\n'),
+            "must not embed a real newline: {quoted}"
+        );
         let f = EnvFile::parse(Path::new("x"), &format!("K={quoted}\nNEXT=ok\n"));
         let entries: Vec<_> = f.entries().collect();
         assert_eq!(entries.len(), 2, "value newline must not split the file");

@@ -229,18 +229,19 @@ fn selector_example(f: &EnvFile, matches: &[(usize, &store::Entry)]) -> String {
     let e = matches[0].1;
     let dups = f.occurrences(&e.key).len();
     if dups > 1
-        && let Some(c) = &e.comment {
-            let tag = c.trim_start_matches('#').trim();
-            // Leading run of identifier-ish chars: "senugw0u@gmail.com" -> "senugw0u",
-            // "jax contact" -> "jax". Enough to disambiguate without an ugly @-in-@.
-            let token: String = tag
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-'))
-                .collect();
-            if !token.is_empty() {
-                return format!("{}@{}", e.key, token);
-            }
+        && let Some(c) = &e.comment
+    {
+        let tag = c.trim_start_matches('#').trim();
+        // Leading run of identifier-ish chars: "senugw0u@gmail.com" -> "senugw0u",
+        // "jax contact" -> "jax". Enough to disambiguate without an ugly @-in-@.
+        let token: String = tag
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-'))
+            .collect();
+        if !token.is_empty() {
+            return format!("{}@{}", e.key, token);
         }
+    }
     e.key.clone()
 }
 
@@ -346,7 +347,9 @@ fn cmd_run(cli: &Cli, selectors: &[String], all: bool, no_mask: bool, command: &
 fn select_error_message(err: &SelectError) -> String {
     match err {
         SelectError::NotFound(sel) => {
-            format!("no entry matches selector '{sel}' — run `agents-env ls {sel}` to discover key names and tags")
+            format!(
+                "no entry matches selector '{sel}' — run `agents-env ls {sel}` to discover key names and tags"
+            )
         }
         SelectError::Ambiguous { key, tags } => {
             let opts = tags
@@ -362,6 +365,9 @@ fn select_error_message(err: &SelectError) -> String {
 // ---------------------------------------------------------------- set / copy
 
 fn cmd_set(key: &str, value: &str, to: &str) -> i32 {
+    if let Err(m) = store::validate_key(key) {
+        return fail(3, &m);
+    }
     if guard::looks_like_secret(value) {
         eprintln!(
             "agents-env: warning: this value looks like a credential. If an agent typed it, \
@@ -395,6 +401,11 @@ fn cmd_copy(selectors: &[String], to: &str, rename: Option<&str>) -> i32 {
     if rename.is_some() && selectors.len() != 1 {
         return fail(3, "--as works with exactly one selector");
     }
+    if let Some(rename) = rename
+        && let Err(m) = store::validate_key(rename)
+    {
+        return fail(3, &format!("invalid --as key: {m}"));
+    }
     let gpath = config::global_store();
     let g = match EnvFile::load(&gpath) {
         Ok(f) => f,
@@ -402,7 +413,7 @@ fn cmd_copy(selectors: &[String], to: &str, rename: Option<&str>) -> i32 {
             return fail(
                 1,
                 &format!("cannot read global store {}: {e}", gpath.display()),
-            )
+            );
         }
     };
 
@@ -506,9 +517,10 @@ fn cmd_edit() -> i32 {
     }
     let path = config::global_store();
     if let Some(dir) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(dir) {
-            return fail(1, &format!("cannot create {}: {e}", dir.display()));
-        }
+        && let Err(e) = std::fs::create_dir_all(dir)
+    {
+        return fail(1, &format!("cannot create {}: {e}", dir.display()));
+    }
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
     let status = std::process::Command::new(&editor).arg(&path).status();
     match status {
@@ -592,11 +604,14 @@ fn cmd_doctor() -> i32 {
             if name.ends_with(".bak") {
                 if let Ok(md) = entry.metadata()
                     && let Ok(modified) = md.modified()
-                        && let Ok(age) = now.duration_since(modified)
-                            && age.as_secs() > 30 * 24 * 3600 {
-                                warnings += 1;
-                                println!("local: {name}\n  warn: backup older than 30 days — consider deleting");
-                            }
+                    && let Ok(age) = now.duration_since(modified)
+                    && age.as_secs() > 30 * 24 * 3600
+                {
+                    warnings += 1;
+                    println!(
+                        "local: {name}\n  warn: backup older than 30 days — consider deleting"
+                    );
+                }
                 continue;
             }
             println!("local: {name}");
