@@ -176,6 +176,7 @@ mod macos_keychain {
     use apple_native_keyring_store::keychain::Store as NativeStore;
     use keyring_core::api::CredentialStoreApi;
     use keyring_core::{Entry, Error as KeyringError};
+    use security_framework::os::macos::keychain::SecKeychain;
 
     use super::{Secret, SecretMetadata, SecretStore, StoreError};
 
@@ -201,19 +202,23 @@ mod macos_keychain {
 
         pub fn set(&self, key: &str, tag: Option<&str>, value: &str) -> Result<(), StoreError> {
             let (service, account) = identity(key, tag);
-            let entry = self
-                .provider
-                .build(&service, &account, None)
-                .map_err(|_| StoreError::Unavailable("keychain access failed".into()))?;
-            entry
-                .set_password(value)
-                .map_err(|_| StoreError::Unavailable("keychain access failed".into()))
+            without_user_interaction(|| {
+                let entry = self
+                    .provider
+                    .build(&service, &account, None)
+                    .map_err(|_| StoreError::Unavailable("keychain access failed".into()))?;
+                entry
+                    .set_password(value)
+                    .map_err(|_| StoreError::Unavailable("keychain access failed".into()))
+            })
         }
 
         fn search(&self) -> Result<Vec<Entry>, StoreError> {
-            self.provider
-                .search(&HashMap::new())
-                .map_err(|_| StoreError::Unavailable("keychain access failed".into()))
+            without_user_interaction(|| {
+                self.provider
+                    .search(&HashMap::new())
+                    .map_err(|_| StoreError::Unavailable("keychain access failed".into()))
+            })
         }
 
         fn metadata_from_entry(entry: &Entry) -> Option<SecretMetadata> {
@@ -234,9 +239,11 @@ mod macos_keychain {
         }
 
         fn resolve_metadata(&self, metadata: SecretMetadata) -> Result<Secret, StoreError> {
-            let entry = self.entry_for(&metadata)?;
-            let value = entry.get_password().map_err(map_read_error)?;
-            Ok(Secret::new(metadata, value, None))
+            without_user_interaction(|| {
+                let entry = self.entry_for(&metadata)?;
+                let value = entry.get_password().map_err(map_read_error)?;
+                Ok(Secret::new(metadata, value, None))
+            })
         }
     }
 
@@ -304,6 +311,14 @@ mod macos_keychain {
             KeyringError::NoEntry => StoreError::NotFound("keychain entry".into()),
             _ => StoreError::Unavailable("keychain access failed".into()),
         }
+    }
+
+    fn without_user_interaction<T>(
+        operation: impl FnOnce() -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        let _lock = SecKeychain::disable_user_interaction()
+            .map_err(|_| StoreError::Unavailable("keychain access failed".into()))?;
+        operation()
     }
 }
 

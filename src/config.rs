@@ -8,6 +8,12 @@
 use std::fs;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    File,
+    Keychain,
+}
+
 pub fn home() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").expect("HOME is not set"))
 }
@@ -34,6 +40,30 @@ pub fn global_store() -> PathBuf {
         }
     }
     config_dir().join("global.env")
+}
+
+/// Select the global secret backend. File storage remains the default so
+/// existing installations, headless sessions, and non-macOS builds keep their
+/// current behavior until a user opts into Keychain.
+pub fn backend() -> Result<Backend, String> {
+    let Ok(text) = fs::read_to_string(config_path()) else {
+        return Ok(Backend::File);
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        let Some(value) = line.strip_prefix("backend=") else {
+            continue;
+        };
+        return match value.trim().to_ascii_lowercase().as_str() {
+            "file" => Ok(Backend::File),
+            "keychain" => Ok(Backend::Keychain),
+            other => Err(format!(
+                "invalid backend '{other}' in {} (expected file or keychain)",
+                config_path().display()
+            )),
+        };
+    }
+    Ok(Backend::File)
 }
 
 /// Expand `~/` and resolve relative paths against the config dir, so the global

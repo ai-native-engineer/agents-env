@@ -9,6 +9,7 @@ mod guard;
 mod mask;
 mod store;
 
+use backend::{FileStore, SecretMetadata, SecretStore, StoreError};
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use store::{EnvFile, SelectError};
@@ -164,6 +165,36 @@ fn load_scope(cli: &Cli) -> Result<(EnvFile, bool), (i32, String)> {
     }
 }
 
+fn load_global_backend() -> Result<Box<dyn SecretStore>, (i32, String)> {
+    match config::backend().map_err(|m| (3, m))? {
+        config::Backend::File => {
+            let path = config::global_store();
+            let file = EnvFile::load(&path).map_err(|e| {
+                (
+                    1,
+                    format!(
+                        "cannot read {}: {e}\n  (global store missing? humans can create it with `agents-env edit`)",
+                        path.display()
+                    ),
+                )
+            })?;
+            Ok(Box::new(FileStore::from_env_file(file)))
+        }
+        config::Backend::Keychain => {
+            #[cfg(target_os = "macos")]
+            {
+                backend::KeychainStore::new()
+                    .map(|store| Box::new(store) as Box<dyn SecretStore>)
+                    .map_err(|error| (2, store_error_message(&error)))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err((2, "keychain backend requires macOS".to_string()))
+            }
+        }
+    }
+}
+
 fn fail(code: i32, msg: &str) -> i32 {
     eprintln!("agents-env: {msg}");
     code
@@ -177,6 +208,13 @@ const YELLOW: &str = "\x1b[1;33m";
 const RESET: &str = "\x1b[0m";
 
 fn cmd_get(cli: &Cli, pattern: &str) -> i32 {
+    if !cli.local && cli.file.is_none() {
+        match config::backend() {
+            Ok(config::Backend::Keychain) => return cmd_get_keychain(pattern),
+            Ok(config::Backend::File) => {}
+            Err(m) => return fail(3, &m),
+        }
+    }
     let (f, _) = match load_scope(cli) {
         Ok(v) => v,
         Err((c, m)) => return fail(c, &m),
@@ -225,6 +263,65 @@ fn cmd_get(cli: &Cli, pattern: &str) -> i32 {
     0
 }
 
+fn cmd_get_keychain(pattern: &str) -> i32 {
+    let store = match load_global_backend() {
+        Ok(store) => store,
+        Err((code, message)) => return fail(code, &message),
+    };
+    let metadata = match store.metadata(Some(pattern)) {
+        Ok(metadata) => metadata,
+        Err(error) => return fail(2, &store_error_message(&error)),
+    };
+    if metadata.is_empty() {
+        return fail(1, &format!("no key matching '{pattern}' in Keychain"));
+    }
+    print_metadata(&metadata);
+    println!("--");
+    println!("Keychain backend: values are hidden. use them without seeing them:");
+    let example = metadata_selector_example(&metadata[0], &metadata);
+    println!(
+        "  agents-env run {example} -- <command using {{{{{}}}}}>",
+        metadata[0].key()
+    );
+    println!("  agents-env copy {example} --to .env.local");
+    0
+}
+
+fn print_metadata(metadata: &[SecretMetadata]) {
+    for item in metadata {
+        let length = item
+            .value_len()
+            .map(|length| format!(", {length} chars"))
+            .unwrap_or_default();
+        println!(
+            "{}  [set{}]  {}",
+            item.key(),
+            length,
+            item.tag().unwrap_or("")
+        );
+    }
+}
+
+fn metadata_selector_example(item: &SecretMetadata, all: &[SecretMetadata]) -> String {
+    let duplicate = all
+        .iter()
+        .filter(|candidate| candidate.key() == item.key())
+        .count()
+        > 1;
+    if duplicate && let Some(tag) = item.tag() {
+        let token: String = tag
+            .trim_start_matches('#')
+            .trim()
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-'))
+            .collect();
+        if !token.is_empty() {
+            return format!("{}@{}", item.key(), token);
+        }
+    }
+    item.key().to_string()
+}
+
 /// A concrete selector for the first matched key: `KEY@tag` when the key is
 /// duplicated and has a tag, plain `KEY` otherwise.
 fn selector_example(f: &EnvFile, matches: &[(usize, &store::Entry)]) -> String {
@@ -248,6 +345,13 @@ fn selector_example(f: &EnvFile, matches: &[(usize, &store::Entry)]) -> String {
 }
 
 fn cmd_ls(cli: &Cli, pattern: Option<&str>) -> i32 {
+    if !cli.local && cli.file.is_none() {
+        match config::backend() {
+            Ok(config::Backend::Keychain) => return cmd_ls_keychain(pattern),
+            Ok(config::Backend::File) => {}
+            Err(m) => return fail(3, &m),
+        }
+    }
     let (f, _) = match load_scope(cli) {
         Ok(v) => v,
         Err((c, m)) => return fail(c, &m),
@@ -259,6 +363,24 @@ fn cmd_ls(cli: &Cli, pattern: Option<&str>) -> i32 {
     for (_, e) in matches {
         let tag = e.comment.as_deref().unwrap_or("");
         println!("{}  {}", e.key, tag);
+    }
+    0
+}
+
+fn cmd_ls_keychain(pattern: Option<&str>) -> i32 {
+    let store = match load_global_backend() {
+        Ok(store) => store,
+        Err((code, message)) => return fail(code, &message),
+    };
+    let metadata = match store.metadata(pattern) {
+        Ok(metadata) => metadata,
+        Err(error) => return fail(2, &store_error_message(&error)),
+    };
+    if metadata.is_empty() {
+        return fail(1, "no keys in Keychain");
+    }
+    for item in metadata {
+        println!("{}  {}", item.key(), item.tag().unwrap_or(""));
     }
     0
 }
@@ -281,6 +403,16 @@ fn cmd_run(cli: &Cli, selectors: &[String], all: bool, no_mask: bool, command: &
     }
     if !all && selectors.is_empty() {
         return fail(3, "specify KEY[@tag] selectors or --all");
+    }
+
+    if !cli.local && cli.file.is_none() {
+        match config::backend() {
+            Ok(config::Backend::Keychain) => {
+                return cmd_run_keychain(selectors, all, no_mask, command);
+            }
+            Ok(config::Backend::File) => {}
+            Err(m) => return fail(3, &m),
+        }
     }
 
     let (f, is_local) = match load_scope(cli) {
@@ -321,10 +453,9 @@ fn cmd_run(cli: &Cli, selectors: &[String], all: bool, no_mask: bool, command: &
     let mut mask_values: Vec<(String, String)> = inject.clone();
     let mut ambient: Vec<(String, String)> = Vec::new();
     if is_local {
-        if let Ok(g) = EnvFile::load(&config::global_store()) {
-            for (_, e) in g.entries() {
-                ambient.push((e.key.clone(), e.value.clone()));
-            }
+        match ambient_global_values() {
+            Ok(values) => ambient.extend(values),
+            Err(message) => return fail(2, &message),
         }
         for (_, e) in f.entries() {
             ambient.push((e.key.clone(), e.value.clone()));
@@ -346,6 +477,84 @@ fn cmd_run(cli: &Cli, selectors: &[String], all: bool, no_mask: bool, command: &
     mask::run(&inject, command, &mask_values, !no_mask)
 }
 
+fn ambient_global_values() -> Result<Vec<(String, String)>, String> {
+    match config::backend()? {
+        config::Backend::File => Ok(EnvFile::load(&config::global_store())
+            .ok()
+            .map(|file| {
+                file.entries()
+                    .map(|(_, entry)| (entry.key.clone(), entry.value.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()),
+        config::Backend::Keychain => load_global_backend()
+            .map_err(|(_, message)| message)
+            .and_then(|store| {
+                store
+                    .resolve_all()
+                    .map(|secrets| {
+                        secrets
+                            .into_iter()
+                            .map(|secret| (secret.key().to_string(), secret.value().to_string()))
+                            .collect()
+                    })
+                    .map_err(|error| store_error_message(&error))
+            }),
+    }
+}
+
+fn cmd_run_keychain(selectors: &[String], all: bool, no_mask: bool, command: &[String]) -> i32 {
+    let store = match load_global_backend() {
+        Ok(store) => store,
+        Err((code, message)) => return fail(code, &message),
+    };
+    let resolved = if all {
+        match store.resolve_all() {
+            Ok(values) => values,
+            Err(error) => return fail(2, &store_error_message(&error)),
+        }
+    } else {
+        let mut values = Vec::with_capacity(selectors.len());
+        for selector in selectors {
+            match store.resolve(selector) {
+                Ok(value) => values.push(value),
+                Err(error) => return fail(2, &store_error_message(&error)),
+            }
+        }
+        values
+    };
+    if resolved.is_empty() {
+        return fail(1, "no keys in Keychain");
+    }
+
+    let mut inject: Vec<(String, String)> = Vec::new();
+    for secret in resolved {
+        if let Some(position) = inject.iter().position(|(key, _)| key == secret.key()) {
+            eprintln!(
+                "agents-env: warning: duplicate key {} — last occurrence wins",
+                secret.key()
+            );
+            inject[position] = (secret.key().to_string(), secret.value().to_string());
+        } else {
+            inject.push((secret.key().to_string(), secret.value().to_string()));
+        }
+    }
+
+    let mut mask_values = inject.clone();
+    let ambient = match store.resolve_all() {
+        Ok(values) => values,
+        Err(error) => return fail(2, &store_error_message(&error)),
+    };
+    mask_values.extend(
+        ambient
+            .into_iter()
+            .map(|secret| (secret.key().to_string(), secret.value().to_string())),
+    );
+    let mut seen = std::collections::HashSet::new();
+    mask_values.retain(|(_, value)| seen.insert(value.clone()));
+    mask::run(&inject, command, &mask_values, !no_mask)
+}
+
 fn select_error_message(err: &SelectError) -> String {
     match err {
         SelectError::NotFound(sel) => {
@@ -361,6 +570,25 @@ fn select_error_message(err: &SelectError) -> String {
                 .join("\n");
             format!("'{key}' has multiple entries — pick one with KEY@tag:\n{opts}")
         }
+    }
+}
+
+fn store_error_message(err: &StoreError) -> String {
+    match err {
+        StoreError::NotFound(selector) => {
+            format!(
+                "no entry matches selector '{selector}' — run `agents-env ls {selector}` to discover key names and tags"
+            )
+        }
+        StoreError::Ambiguous { key, tags } => {
+            let opts = tags
+                .iter()
+                .map(|tag| format!("  {key}@{}", tag.trim_start_matches('#').trim()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("'{key}' has multiple entries — pick one with KEY@tag:\n{opts}")
+        }
+        StoreError::Unavailable(message) | StoreError::Invalid(message) => message.clone(),
     }
 }
 
@@ -407,6 +635,11 @@ fn cmd_copy(selectors: &[String], to: &str, rename: Option<&str>) -> i32 {
         && let Err(m) = store::validate_key(rename)
     {
         return fail(3, &format!("invalid --as key: {m}"));
+    }
+    match config::backend() {
+        Ok(config::Backend::Keychain) => return cmd_copy_keychain(selectors, to, rename),
+        Ok(config::Backend::File) => {}
+        Err(m) => return fail(3, &m),
     }
     let gpath = config::global_store();
     let g = match EnvFile::load(&gpath) {
@@ -468,6 +701,61 @@ fn cmd_copy(selectors: &[String], to: &str, rename: Option<&str>) -> i32 {
     0
 }
 
+fn cmd_copy_keychain(selectors: &[String], to: &str, rename: Option<&str>) -> i32 {
+    let store = match load_global_backend() {
+        Ok(store) => store,
+        Err((code, message)) => return fail(code, &message),
+    };
+    let mut resolved: Vec<(String, String, Option<String>)> = Vec::new();
+    for selector in selectors {
+        let secret = match store.resolve(selector) {
+            Ok(secret) => secret,
+            Err(error) => return fail(2, &store_error_message(&error)),
+        };
+        let key = rename.unwrap_or(secret.key()).to_string();
+        let raw = secret
+            .raw_value()
+            .map(str::to_string)
+            .unwrap_or_else(|| store::quote_value(secret.value()));
+        resolved.push((key, raw, secret.tag().map(str::to_string)));
+    }
+
+    let cwd = match std::env::current_dir() {
+        Ok(directory) => directory,
+        Err(error) => return fail(1, &error.to_string()),
+    };
+    let target = match guard::check_write_allowed(&cwd, to) {
+        Ok(target) => target,
+        Err(message) => return fail(2, &message),
+    };
+    if let Err(message) = guard::git_secret_check(&cwd, to) {
+        return fail(2, &message);
+    }
+    let mut file = match EnvFile::load_or_empty(&target) {
+        Ok(file) => file,
+        Err(error) => return fail(1, &format!("cannot read {to}: {error}")),
+    };
+    let mut report = Vec::new();
+    for (key, raw, tag) in &resolved {
+        match upsert(&mut file, key, raw, tag.as_deref()) {
+            Ok(action) => report.push(format!(
+                "copied {key} ({}) -> {to} [{action}]",
+                tag.as_deref()
+                    .map(|tag| tag.trim_start_matches('#').trim())
+                    .unwrap_or("untagged")
+            )),
+            Err(message) => return fail(2, &message),
+        }
+    }
+    if let Err(message) = write_back(&target, &file) {
+        return fail(1, &message);
+    }
+    for line in report {
+        println!("{line}");
+    }
+    0
+}
+
 /// Update the single occurrence of `key` (preserving the line), append if new,
 /// refuse if the target itself has duplicate occurrences.
 fn upsert(
@@ -507,6 +795,16 @@ fn write_back(target: &Path, f: &EnvFile) -> Result<(), String> {
 // ---------------------------------------------------------------- edit
 
 fn cmd_edit() -> i32 {
+    match config::backend() {
+        Ok(config::Backend::Keychain) => {
+            return fail(
+                2,
+                "edit is only available for the file backend; Keychain entries use an explicit setup or migration command",
+            );
+        }
+        Ok(config::Backend::File) => {}
+        Err(m) => return fail(3, &m),
+    }
     if aimode::agent_mode() {
         return fail(
             2,
@@ -558,38 +856,71 @@ fn cmd_doctor() -> i32 {
     use std::os::unix::fs::PermissionsExt;
     let mut warnings = 0;
 
-    let gpath = config::global_store();
-    println!("global store: {}", gpath.display());
-    match std::fs::metadata(&gpath) {
-        Ok(md) => {
-            let mode = md.permissions().mode() & 0o777;
-            if mode & 0o077 != 0 {
+    let selected_backend = match config::backend() {
+        Ok(backend) => backend,
+        Err(message) => {
+            warnings += 1;
+            println!("global backend: invalid\n  warn: {message}");
+            config::Backend::File
+        }
+    };
+    println!(
+        "global backend: {}",
+        match selected_backend {
+            config::Backend::File => "file",
+            config::Backend::Keychain => "keychain",
+        }
+    );
+    if selected_backend == config::Backend::Keychain {
+        #[cfg(target_os = "macos")]
+        match backend::KeychainStore::new() {
+            Ok(_) => println!("  keychain: provider available (metadata not read)"),
+            Err(error) => {
                 warnings += 1;
-                println!("  warn: permissions {mode:o} — consider chmod 600");
+                println!("  warn: {}", store_error_message(&error));
             }
-            if let Ok(f) = EnvFile::load(&gpath) {
-                let mut seen: Vec<String> = Vec::new();
-                for (_, e) in f.entries() {
-                    if f.occurrences(&e.key).len() > 1
-                        && e.comment.is_none()
-                        && !seen.contains(&e.key)
-                    {
-                        seen.push(e.key.clone());
-                        warnings += 1;
-                        println!(
-                            "  warn: duplicate key {} has untagged entries (KEY@tag selection)",
-                            e.key
-                        );
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            warnings += 1;
+            println!("  warn: keychain backend requires macOS");
+        }
+    }
+
+    let gpath = config::global_store();
+    if selected_backend == config::Backend::File {
+        println!("global store: {}", gpath.display());
+        match std::fs::metadata(&gpath) {
+            Ok(md) => {
+                let mode = md.permissions().mode() & 0o777;
+                if mode & 0o077 != 0 {
+                    warnings += 1;
+                    println!("  warn: permissions {mode:o} — consider chmod 600");
+                }
+                if let Ok(f) = EnvFile::load(&gpath) {
+                    let mut seen: Vec<String> = Vec::new();
+                    for (_, e) in f.entries() {
+                        if f.occurrences(&e.key).len() > 1
+                            && e.comment.is_none()
+                            && !seen.contains(&e.key)
+                        {
+                            seen.push(e.key.clone());
+                            warnings += 1;
+                            println!(
+                                "  warn: duplicate key {} has untagged entries (KEY@tag selection)",
+                                e.key
+                            );
+                        }
                     }
                 }
             }
-        }
-        Err(_) => {
-            warnings += 1;
-            println!(
-                "  warn: does not exist — create it with `agents-env edit` or set global_store= in {}",
-                config::config_path().display()
-            );
+            Err(_) => {
+                warnings += 1;
+                println!(
+                    "  warn: does not exist — create it with `agents-env edit` or set global_store= in {}",
+                    config::config_path().display()
+                );
+            }
         }
     }
 

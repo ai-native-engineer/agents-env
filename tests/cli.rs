@@ -665,6 +665,33 @@ fn edit_refused_in_agent_mode_and_non_tty() {
     assert_eq!(fs::read_to_string(sb.global_path()).unwrap(), GLOBAL);
 }
 
+#[test]
+fn keychain_backend_keeps_file_editor_disabled() {
+    let sb = Sandbox::new();
+    fs::write(
+        sb.home.path().join(".config/agents-env/config"),
+        "backend=keychain\n",
+    )
+    .unwrap();
+    let out = sb.cmd(false).arg("edit").assert().code(2);
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(stderr.contains("file backend"));
+}
+
+#[test]
+fn invalid_backend_is_rejected_without_reading_the_store() {
+    let sb = Sandbox::new();
+    fs::write(
+        sb.home.path().join(".config/agents-env/config"),
+        "backend=not-a-backend\n",
+    )
+    .unwrap();
+    let out = sb.cmd(true).args(["get", "TAVILY"]).assert().code(3);
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(stderr.contains("invalid backend"));
+    assert!(!stderr.contains("tvly-aaaa1111bbbb2222"));
+}
+
 // ---------------------------------------------------------------- local scope
 
 #[test]
