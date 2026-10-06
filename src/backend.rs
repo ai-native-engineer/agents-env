@@ -168,6 +168,149 @@ impl SecretStore for FileStore {
     }
 }
 
+#[cfg(target_os = "macos")]
+mod macos_keychain {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use apple_native_keyring_store::keychain::Store as NativeStore;
+    use keyring_core::api::CredentialStoreApi;
+    use keyring_core::{Entry, Error as KeyringError};
+
+    use super::{Secret, SecretMetadata, SecretStore, StoreError};
+
+    const SERVICE_PREFIX: &str = "agents-env/";
+    const UNTAGGED_ACCOUNT: &str = "__untagged__";
+
+    /// macOS legacy Keychain backend for an unsigned CLI.
+    ///
+    /// The `protected` Apple store is intentionally not used: it requires app
+    /// entitlements that a command-line binary does not have. Search asks the
+    /// provider for attributes only; password bytes are requested only after a
+    /// selector has resolved to one item.
+    pub struct KeychainStore {
+        provider: Arc<NativeStore>,
+    }
+
+    impl KeychainStore {
+        pub fn new() -> Result<Self, StoreError> {
+            NativeStore::new()
+                .map(|provider| Self { provider })
+                .map_err(|_| StoreError::Unavailable("keychain access failed".into()))
+        }
+
+        pub fn set(&self, key: &str, tag: Option<&str>, value: &str) -> Result<(), StoreError> {
+            let (service, account) = identity(key, tag);
+            let entry = self
+                .provider
+                .build(&service, &account, None)
+                .map_err(|_| StoreError::Unavailable("keychain access failed".into()))?;
+            entry
+                .set_password(value)
+                .map_err(|_| StoreError::Unavailable("keychain access failed".into()))
+        }
+
+        fn search(&self) -> Result<Vec<Entry>, StoreError> {
+            self.provider
+                .search(&HashMap::new())
+                .map_err(|_| StoreError::Unavailable("keychain access failed".into()))
+        }
+
+        fn metadata_from_entry(entry: &Entry) -> Option<SecretMetadata> {
+            let (service, account) = entry.get_specifiers()?;
+            let key = service.strip_prefix(SERVICE_PREFIX)?;
+            if key.is_empty() {
+                return None;
+            }
+            let tag = (account != UNTAGGED_ACCOUNT).then(|| format!("# {account}"));
+            Some(SecretMetadata::new(key.to_string(), tag, None))
+        }
+
+        fn entry_for(&self, metadata: &SecretMetadata) -> Result<Entry, StoreError> {
+            let (service, account) = identity(metadata.key(), metadata.tag());
+            self.provider
+                .build(&service, &account, None)
+                .map_err(|_| StoreError::Unavailable("keychain access failed".into()))
+        }
+
+        fn resolve_metadata(&self, metadata: SecretMetadata) -> Result<Secret, StoreError> {
+            let entry = self.entry_for(&metadata)?;
+            let value = entry.get_password().map_err(map_read_error)?;
+            Ok(Secret::new(metadata, value, None))
+        }
+    }
+
+    impl SecretStore for KeychainStore {
+        fn metadata(&self, pattern: Option<&str>) -> Result<Vec<SecretMetadata>, StoreError> {
+            let pattern = pattern.unwrap_or("").to_ascii_lowercase();
+            Ok(self
+                .search()?
+                .iter()
+                .filter_map(Self::metadata_from_entry)
+                .filter(|metadata| metadata.key().to_ascii_lowercase().contains(&pattern))
+                .collect())
+        }
+
+        fn resolve(&self, selector: &str) -> Result<Secret, StoreError> {
+            let (key, wanted_tag) = selector
+                .split_once('@')
+                .map_or((selector, None), |(key, tag)| (key, Some(tag)));
+            let candidates: Vec<_> = self
+                .metadata(None)?
+                .into_iter()
+                .filter(|metadata| metadata.key().eq_ignore_ascii_case(key))
+                .filter(|metadata| match wanted_tag {
+                    Some(wanted) => metadata
+                        .tag()
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        .contains(&wanted.to_ascii_lowercase()),
+                    None => true,
+                })
+                .collect();
+            match candidates.as_slice() {
+                [] => Err(StoreError::NotFound(selector.to_string())),
+                [metadata] => self.resolve_metadata(metadata.clone()),
+                _ => Err(StoreError::Ambiguous {
+                    key: key.to_string(),
+                    tags: candidates
+                        .iter()
+                        .map(|metadata| metadata.tag().unwrap_or("(no tag)").to_string())
+                        .collect(),
+                }),
+            }
+        }
+
+        fn resolve_all(&self) -> Result<Vec<Secret>, StoreError> {
+            self.metadata(None)?
+                .into_iter()
+                .map(|metadata| self.resolve_metadata(metadata))
+                .collect()
+        }
+    }
+
+    fn identity(key: &str, tag: Option<&str>) -> (String, String) {
+        let service = format!("{SERVICE_PREFIX}{key}");
+        let account = tag
+            .map(|tag| tag.trim_start_matches('#').trim())
+            .filter(|tag| !tag.is_empty())
+            .unwrap_or(UNTAGGED_ACCOUNT)
+            .to_string();
+        (service, account)
+    }
+
+    fn map_read_error(error: KeyringError) -> StoreError {
+        match error {
+            KeyringError::NoEntry => StoreError::NotFound("keychain entry".into()),
+            _ => StoreError::Unavailable("keychain access failed".into()),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unused_imports)] // exported for backend factory wiring in the next goal row.
+pub use macos_keychain::KeychainStore;
+
 #[cfg(test)]
 mod tests {
     use super::*;
