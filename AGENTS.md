@@ -6,12 +6,13 @@ Rust CLI that lets an AI agent use secrets without seeing their values. User-fac
 
 ```
 cargo build            # debug
-cargo test             # unit (in each module) + integration (tests/cli.rs)
+cargo test             # embedded unit tests (src) + integration tests (tests/cli.rs)
 cargo clippy --all-targets   # must stay at 0 warnings
-cargo build --release  # strip+lto, installs to ~/.local/bin via the commands below
+cargo build --release  # release binary (strip+lto)
+cp target/release/agents-env ~/.local/bin/  # local dogfooding install
 ```
 
-Install the local build for dogfooding: `cp target/release/agents-env ~/.local/bin/`.
+The release build does not install itself; copy it explicitly when dogfooding.
 
 ## Architecture (one responsibility per module)
 
@@ -29,7 +30,7 @@ These are the product. A change that weakens one is a bug even if it compiles:
 1. In agent mode, `get` never prints a value; `run`'s `--no-mask` is refused.
 2. Every **injected** value is in the mask set regardless of length (no short-secret leak).
 3. Masking is leftmost-longest with a hold-back buffer — overlapping/prefix secrets and boundary-straddling matches never leak a fragment.
-4. `set`/`copy` can only write bare `.env*` files in cwd; the global store is unreachable (no flag, path-separator/symlink/hardlink/samefile/cwd-in-store-dir all rejected).
+4. `set`/`copy` can only write bare `.env*` files in cwd; the global store is unreachable (no flag, path-separator/symlink/hardlink/samefile/cwd-in-store-dir-or-descendant all rejected).
 5. Secret-bearing `copy` refuses git-tracked or non-gitignored targets (no override).
 6. Writes back up to `<file>.YYMMDD.bak` (first-of-day wins) then write atomically (`O_NOFOLLOW` temp + rename).
 

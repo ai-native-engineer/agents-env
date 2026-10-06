@@ -115,10 +115,7 @@ fn builtin_agent_markers_hide_get_values() {
 fn agent_cli_ancestors_enforce_agent_mode() {
     for name in AI_CLI_NAMES {
         let sb = Sandbox::new();
-        let output = sb.via_agent_cli(
-            name,
-            "\"$1\" get tavily; status=$?; exit $status",
-        );
+        let output = sb.via_agent_cli(name, "\"$1\" get tavily; status=$?; exit $status");
         assert!(output.status.success(), "name={name}");
         let stdout = String::from_utf8(output.stdout).unwrap();
         assert!(!stdout.contains("tvly-aaaa1111bbbb2222"), "name={name}");
@@ -211,7 +208,11 @@ fn run_masks_stderr_and_other_global_values() {
 #[test]
 fn local_run_still_masks_global_values() {
     let sb = Sandbox::new();
-    fs::write(sb.cwd.path().join(".env"), "LOCAL_KEY=\"local-secret-123\"\n").unwrap();
+    fs::write(
+        sb.cwd.path().join(".env"),
+        "LOCAL_KEY=\"local-secret-123\"\n",
+    )
+    .unwrap();
     let out = sb
         .cmd(true)
         .args([
@@ -258,6 +259,15 @@ fn run_propagates_exit_code() {
         .args(["run", "TAVILY_API_KEY", "--", "sh", "-c", "exit 7"])
         .assert()
         .code(7);
+}
+
+#[test]
+fn run_restores_sigint_for_child() {
+    let sb = Sandbox::new();
+    sb.cmd(true)
+        .args(["run", "TAVILY_API_KEY", "--", "sh", "-c", "kill -INT $$"])
+        .assert()
+        .code(130);
 }
 
 #[test]
@@ -411,7 +421,10 @@ fn copy_writes_value_without_printing_it() {
     assert!(stdout.contains("copied GEMINI_API_KEY"));
     let content = sb.local(".env.local");
     assert!(content.contains("GEMINI_API_KEY=\"gem-work-ABC67890\""));
-    assert!(content.contains("# work account"), "tag comment travels along");
+    assert!(
+        content.contains("# work account"),
+        "tag comment travels along"
+    );
 }
 
 #[test]
@@ -428,7 +441,10 @@ fn copy_as_renames_key() {
         ])
         .assert()
         .success();
-    assert!(sb.local(".env.local").contains("GOOGLE_KEY=\"gem-work-ABC67890\""));
+    assert!(
+        sb.local(".env.local")
+            .contains("GOOGLE_KEY=\"gem-work-ABC67890\"")
+    );
 }
 
 #[test]
@@ -463,6 +479,28 @@ fn set_warns_on_credential_looking_value() {
     assert!(stderr.contains("looks like a credential"));
 }
 
+#[test]
+fn writes_reject_invalid_keys_without_touching_target() {
+    let sb = Sandbox::new();
+    for bad in ["BAD=KEY", "BAD\nINJECTED", "1BAD"] {
+        sb.cmd(true).args(["set", bad, "value"]).assert().code(3);
+        assert!(!sb.cwd.path().join(".env").exists(), "bad key: {bad:?}");
+    }
+
+    sb.cmd(true)
+        .args([
+            "copy",
+            "TAVILY_API_KEY",
+            "--as",
+            "BAD=KEY",
+            "--to",
+            ".env.local",
+        ])
+        .assert()
+        .code(3);
+    assert!(!sb.cwd.path().join(".env.local").exists());
+}
+
 // ---------------------------------------------------------------- backups
 
 #[test]
@@ -478,9 +516,16 @@ fn backup_is_first_wins_per_day() {
         .filter(|n| n.ends_with(".bak"))
         .collect();
     assert_eq!(baks.len(), 1, "exactly one backup: {baks:?}");
-    assert!(baks[0].starts_with(".env."), "covered by .env* patterns: {}", baks[0]);
+    assert!(
+        baks[0].starts_with(".env."),
+        "covered by .env* patterns: {}",
+        baks[0]
+    );
     let bak_content = sb.local(&baks[0]);
-    assert!(bak_content.contains("v1"), "first-wins keeps day-start state");
+    assert!(
+        bak_content.contains("v1"),
+        "first-wins keeps day-start state"
+    );
     assert!(!bak_content.contains("v2"));
 }
 
@@ -532,7 +577,21 @@ fn guard_rejects_writes_in_global_store_directory() {
     let store_dir = sb.home.path().join(".config/agents-env");
     let mut c = sb.cmd(true);
     c.current_dir(&store_dir);
-    c.args(["set", "K", "v", "--to", ".env.local"]).assert().code(2);
+    c.args(["set", "K", "v", "--to", ".env.local"])
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn guard_rejects_writes_in_global_store_subdirectory() {
+    let sb = Sandbox::new();
+    let nested = sb.home.path().join(".config/agents-env/nested");
+    fs::create_dir_all(&nested).unwrap();
+    let mut c = sb.cmd(true);
+    c.current_dir(&nested);
+    c.args(["set", "K", "v", "--to", ".env.local"])
+        .assert()
+        .code(2);
 }
 
 #[test]
@@ -598,7 +657,11 @@ fn edit_refused_in_agent_mode_and_non_tty() {
     let sb = Sandbox::new();
     sb.cmd(true).arg("edit").assert().code(2);
     // human mode but stdin/stdout are pipes -> still refused
-    sb.cmd(false).env("EDITOR", "cat").arg("edit").assert().code(2);
+    sb.cmd(false)
+        .env("EDITOR", "cat")
+        .arg("edit")
+        .assert()
+        .code(2);
     assert_eq!(fs::read_to_string(sb.global_path()).unwrap(), GLOBAL);
 }
 
@@ -607,7 +670,11 @@ fn edit_refused_in_agent_mode_and_non_tty() {
 #[test]
 fn local_scope_reads_named_file() {
     let sb = Sandbox::new();
-    fs::write(sb.cwd.path().join(".env.production"), "DB_URL=\"postgres://x:hunter2secret@h/db\"\n").unwrap();
+    fs::write(
+        sb.cwd.path().join(".env.production"),
+        "DB_URL=\"postgres://x:hunter2secret@h/db\"\n",
+    )
+    .unwrap();
     let out = sb
         .cmd(true)
         .args(["-f", ".env.production", "get", "DB"])

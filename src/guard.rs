@@ -66,17 +66,17 @@ pub fn check_write_allowed(cwd: &Path, name: &str) -> Result<PathBuf, String> {
         .map_err(|e| format!("cannot resolve current directory: {e}"))?;
     if let Some(gdir) = global.parent()
         && let Ok(gdir_canon) = gdir.canonicalize()
-            && cwd_canon == gdir_canon {
-                return Err(
-                    "refusing to write env files inside the global store's directory".to_string(),
-                );
-            }
+        && cwd_canon.starts_with(&gdir_canon)
+    {
+        return Err("refusing to write env files inside the global store's directory".to_string());
+    }
     if let Ok(cfg_canon) = config::config_dir().canonicalize()
-        && cwd_canon == cfg_canon {
-            return Err(
-                "refusing to write env files inside the agents-env config directory".to_string(),
-            );
-        }
+        && cwd_canon.starts_with(&cfg_canon)
+    {
+        return Err(
+            "refusing to write env files inside the agents-env config directory".to_string(),
+        );
+    }
     Ok(target)
 }
 
@@ -192,8 +192,21 @@ pub fn yymmdd() -> String {
 /// is already in its context, which `copy` exists to avoid.
 pub fn looks_like_secret(v: &str) -> bool {
     const PREFIXES: &[&str] = &[
-        "sk-", "sk_live", "pk_live", "ghp_", "gho_", "github_pat_", "xoxb-", "xoxp-", "AIza",
-        "AKIA", "tvly-", "whsec_", "glpat-", "ntn_", "secret_",
+        "sk-",
+        "sk_live",
+        "pk_live",
+        "ghp_",
+        "gho_",
+        "github_pat_",
+        "xoxb-",
+        "xoxp-",
+        "AIza",
+        "AKIA",
+        "tvly-",
+        "whsec_",
+        "glpat-",
+        "ntn_",
+        "secret_",
     ];
     if PREFIXES.iter().any(|p| v.starts_with(p)) {
         return true;
