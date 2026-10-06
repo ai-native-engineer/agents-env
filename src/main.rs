@@ -2,6 +2,8 @@
 //! seeing them.
 
 mod aimode;
+#[allow(dead_code)] // backend contract is introduced before CLI wiring in the next goal rows.
+mod backend;
 mod config;
 mod guard;
 mod mask;
