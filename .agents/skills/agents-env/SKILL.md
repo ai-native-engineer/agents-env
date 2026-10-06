@@ -17,6 +17,12 @@ description: >-
 into the child process you launch; your transcript only ever holds key names and
 `{{KEY}}` placeholders. Full flags: `agents-env --help`.
 
+The default global backend is the existing file store. On macOS, opt into the
+legacy Keychain with `backend=keychain` in `~/.config/agents-env/config`.
+Keychain discovery returns metadata only; values are read in memory for
+`run`/`copy` and are never printed. `copy` still creates a plaintext local
+`.env` export.
+
 ## Setup (run once, if `agents-env: command not found`)
 
 Install the CLI, then point the global store at the user's existing master `.env`:
@@ -117,6 +123,14 @@ agents-env copy GEMINI_API_KEY@personal --to .env.local
 agents-env set NEXT_PUBLIC_URL http://localhost:3000 --to .env.local   # non-secret literals
 ```
 
+Migrate an existing file store explicitly and inspect it first:
+```
+agents-env migrate --to-keychain --dry-run
+agents-env migrate --to-keychain
+```
+The source file is retained. SSH/CI/headless Keychain access must not wait for
+GUI approval; use the file backend there when Keychain access is unavailable.
+
 ## Selectors and scope
 
 - `KEY@tag` picks one account when a key has several; the tag is the inline
@@ -133,4 +147,7 @@ agents-env set NEXT_PUBLIC_URL http://localhost:3000 --to .env.local   # non-sec
 - **Masking is defense in depth, not a sandbox.** It catches verbatim values,
   not re-encoded ones (base64, splitting). Reading `.env` files directly still
   exposes secrets — that is the harness deny-rule layer's job, not this tool's.
+- **Keychain is optional and does not remove runtime exposure.** After a value
+  enters a child environment, process inspection and argv exposure remain
+  possible. Prefer `run` over `copy` and keep the harness deny rules enabled.
 - Run `agents-env doctor` to audit protection (file perms, gitignore, deny rules).

@@ -174,8 +174,8 @@ mod macos_keychain {
     use std::sync::Arc;
 
     use apple_native_keyring_store::keychain::Store as NativeStore;
+    use keyring_core::Error as KeyringError;
     use keyring_core::api::CredentialStoreApi;
-    use keyring_core::{Entry, Error as KeyringError};
     use security_framework::os::macos::keychain::SecKeychain;
 
     use super::{Secret, SecretMetadata, SecretStore, StoreError};
@@ -183,46 +183,33 @@ mod macos_keychain {
     const SERVICE_PREFIX: &str = "agents-env/";
     const UNTAGGED_ACCOUNT: &str = "__untagged__";
 
+    pub trait KeychainProvider {
+        fn list(&self) -> Result<Vec<(String, String)>, StoreError>;
+        fn read(&self, service: &str, account: &str) -> Result<String, StoreError>;
+        fn write(&self, service: &str, account: &str, value: &str) -> Result<(), StoreError>;
+    }
+
     /// macOS legacy Keychain backend for an unsigned CLI.
     ///
     /// The `protected` Apple store is intentionally not used: it requires app
     /// entitlements that a command-line binary does not have. Search asks the
     /// provider for attributes only; password bytes are requested only after a
     /// selector has resolved to one item.
-    pub struct KeychainStore {
-        provider: Arc<NativeStore>,
+    pub struct KeychainStore<P> {
+        provider: P,
     }
 
-    impl KeychainStore {
-        pub fn new() -> Result<Self, StoreError> {
-            NativeStore::new()
-                .map(|provider| Self { provider })
-                .map_err(|_| StoreError::Unavailable("keychain access failed".into()))
+    impl<P: KeychainProvider> KeychainStore<P> {
+        pub fn with_provider(provider: P) -> Self {
+            Self { provider }
         }
 
         pub fn set(&self, key: &str, tag: Option<&str>, value: &str) -> Result<(), StoreError> {
             let (service, account) = identity(key, tag);
-            without_user_interaction(|| {
-                let entry = self
-                    .provider
-                    .build(&service, &account, None)
-                    .map_err(|_| StoreError::Unavailable("keychain access failed".into()))?;
-                entry
-                    .set_password(value)
-                    .map_err(|_| StoreError::Unavailable("keychain access failed".into()))
-            })
+            self.provider.write(&service, &account, value)
         }
 
-        fn search(&self) -> Result<Vec<Entry>, StoreError> {
-            without_user_interaction(|| {
-                self.provider
-                    .search(&HashMap::new())
-                    .map_err(|_| StoreError::Unavailable("keychain access failed".into()))
-            })
-        }
-
-        fn metadata_from_entry(entry: &Entry) -> Option<SecretMetadata> {
-            let (service, account) = entry.get_specifiers()?;
+        fn metadata_from_identity(service: String, account: String) -> Option<SecretMetadata> {
             let key = service.strip_prefix(SERVICE_PREFIX)?;
             if key.is_empty() {
                 return None;
@@ -231,29 +218,83 @@ mod macos_keychain {
             Some(SecretMetadata::new(key.to_string(), tag, None))
         }
 
-        fn entry_for(&self, metadata: &SecretMetadata) -> Result<Entry, StoreError> {
-            let (service, account) = identity(metadata.key(), metadata.tag());
-            self.provider
-                .build(&service, &account, None)
-                .map_err(|_| StoreError::Unavailable("keychain access failed".into()))
+        fn identity_for(metadata: &SecretMetadata) -> (String, String) {
+            identity(metadata.key(), metadata.tag())
         }
 
         fn resolve_metadata(&self, metadata: SecretMetadata) -> Result<Secret, StoreError> {
+            let (service, account) = Self::identity_for(&metadata);
+            let value = self.provider.read(&service, &account)?;
+            Ok(Secret::new(metadata, value, None))
+        }
+    }
+
+    impl KeychainProvider for NativeKeychainProvider {
+        fn list(&self) -> Result<Vec<(String, String)>, StoreError> {
             without_user_interaction(|| {
-                let entry = self.entry_for(&metadata)?;
-                let value = entry.get_password().map_err(map_read_error)?;
-                Ok(Secret::new(metadata, value, None))
+                self.provider
+                    .search(&HashMap::new())
+                    .map_err(|_| StoreError::Unavailable("keychain access failed".into()))
+                    .map(|entries| {
+                        entries
+                            .into_iter()
+                            .filter_map(|entry| entry.get_specifiers())
+                            .collect()
+                    })
+            })
+        }
+
+        fn read(&self, service: &str, account: &str) -> Result<String, StoreError> {
+            without_user_interaction(|| {
+                let entry = self
+                    .provider
+                    .build(service, account, None)
+                    .map_err(|_| StoreError::Unavailable("keychain access failed".into()))?;
+                entry.get_password().map_err(map_read_error)
+            })
+        }
+
+        fn write(&self, service: &str, account: &str, value: &str) -> Result<(), StoreError> {
+            without_user_interaction(|| {
+                let entry = self
+                    .provider
+                    .build(service, account, None)
+                    .map_err(|_| StoreError::Unavailable("keychain access failed".into()))?;
+                entry
+                    .set_password(value)
+                    .map_err(|_| StoreError::Unavailable("keychain access failed".into()))
             })
         }
     }
 
-    impl SecretStore for KeychainStore {
+    pub struct NativeKeychainProvider {
+        provider: Arc<NativeStore>,
+    }
+
+    impl NativeKeychainProvider {
+        fn new() -> Result<Self, StoreError> {
+            NativeStore::new()
+                .map(|provider| Self { provider })
+                .map_err(|_| StoreError::Unavailable("keychain access failed".into()))
+        }
+    }
+
+    pub type NativeKeychainStore = KeychainStore<NativeKeychainProvider>;
+
+    impl NativeKeychainStore {
+        pub fn new() -> Result<Self, StoreError> {
+            Ok(KeychainStore::with_provider(NativeKeychainProvider::new()?))
+        }
+    }
+
+    impl<P: KeychainProvider> SecretStore for KeychainStore<P> {
         fn metadata(&self, pattern: Option<&str>) -> Result<Vec<SecretMetadata>, StoreError> {
             let pattern = pattern.unwrap_or("").to_ascii_lowercase();
             Ok(self
-                .search()?
-                .iter()
-                .filter_map(Self::metadata_from_entry)
+                .provider
+                .list()?
+                .into_iter()
+                .filter_map(|(service, account)| Self::metadata_from_identity(service, account))
                 .filter(|metadata| metadata.key().to_ascii_lowercase().contains(&pattern))
                 .collect())
         }
@@ -323,8 +364,10 @@ mod macos_keychain {
 }
 
 #[cfg(target_os = "macos")]
-#[allow(unused_imports)] // exported for backend factory wiring in the next goal row.
-pub use macos_keychain::KeychainStore;
+pub use macos_keychain::NativeKeychainStore;
+
+#[cfg(all(target_os = "macos", test))]
+pub use macos_keychain::{KeychainProvider, KeychainStore};
 
 #[cfg(test)]
 mod tests {
@@ -472,5 +515,83 @@ mod tests {
         let debug = format!("{error:?}");
         assert!(debug.contains("unavailable"));
         assert!(!debug.contains("secret"));
+    }
+
+    #[cfg(target_os = "macos")]
+    struct FakeKeychainProvider {
+        entries: Vec<(String, String, String)>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl KeychainProvider for FakeKeychainProvider {
+        fn list(&self) -> Result<Vec<(String, String)>, StoreError> {
+            Ok(self
+                .entries
+                .iter()
+                .map(|(service, account, _)| (service.clone(), account.clone()))
+                .collect())
+        }
+
+        fn read(&self, service: &str, account: &str) -> Result<String, StoreError> {
+            self.entries
+                .iter()
+                .find(|(candidate_service, candidate_account, _)| {
+                    candidate_service == service && candidate_account == account
+                })
+                .map(|(_, _, value)| value.clone())
+                .ok_or_else(|| StoreError::NotFound("fake keychain entry".into()))
+        }
+
+        fn write(&self, _service: &str, _account: &str, _value: &str) -> Result<(), StoreError> {
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keychain_adapter_contract_uses_metadata_before_value_read() {
+        let store = KeychainStore::with_provider(FakeKeychainProvider {
+            entries: vec![
+                (
+                    "agents-env/API_KEY".into(),
+                    "work".into(),
+                    "work-secret".into(),
+                ),
+                (
+                    "agents-env/API_KEY".into(),
+                    "personal".into(),
+                    "personal-secret".into(),
+                ),
+            ],
+        });
+        let metadata = store.metadata(Some("api")).unwrap();
+        assert_eq!(metadata.len(), 2);
+        assert!(metadata.iter().all(|item| item.value_len().is_none()));
+        let resolved = store.resolve("API_KEY@work").unwrap();
+        assert_eq!(resolved.value(), "work-secret");
+        assert!(resolved.raw_value().is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_keychain_smoke_uses_an_isolated_temporary_store() {
+        use security_framework::os::macos::keychain::{CreateOptions, SecKeychain};
+        use tempfile::tempdir;
+
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("agents-env-smoke.keychain-db");
+        let mut options = CreateOptions::new();
+        options
+            .password("agents-env-test-password")
+            .prompt_user(false);
+        let keychain = options.create(&path).unwrap();
+        keychain
+            .set_generic_password("agents-env-smoke", "test-account", b"test-value")
+            .unwrap();
+        let (value, _) = keychain
+            .find_generic_password("agents-env-smoke", "test-account")
+            .unwrap();
+        assert_eq!(value.as_ref(), b"test-value");
+        let _ = SecKeychain::open(&path).unwrap();
     }
 }

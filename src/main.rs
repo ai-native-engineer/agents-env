@@ -30,6 +30,10 @@ AGENT MODE (auto on Unix: Grok, Codex, OpenCode, Claude Code, AGY; opt-in: AGENT
   inline '# comment' in the env file). The global store is read-only by
   design: no flag of set/copy can reach it. Humans edit it with `agents-env edit`.
 
+  The global backend is file by default. On macOS, `backend=keychain` opts into
+  metadata-only discovery and in-memory Keychain reads; `copy` still exports a
+  plaintext local file. Use `migrate --to-keychain --dry-run` before migration.
+
   Other assistants and renamed/deeply wrapped CLIs are supported by explicit
   opt-in: launch them with AGENTS_ENV_AGENT_MODE=1, or add a marker you set
   via `markers=MY_AGENT_MODE` in ~/.config/agents-env/config.
@@ -140,7 +144,7 @@ fn main() {
         Cmd::Migrate {
             to_keychain,
             dry_run,
-        } => cmd_migrate(*to_keychain, *dry_run),
+        } => cmd_migrate(&cli, *to_keychain, *dry_run),
     };
     std::process::exit(code);
 }
@@ -196,7 +200,7 @@ fn load_global_backend() -> Result<Box<dyn SecretStore>, (i32, String)> {
         config::Backend::Keychain => {
             #[cfg(target_os = "macos")]
             {
-                backend::KeychainStore::new()
+                backend::NativeKeychainStore::new()
                     .map(|store| Box::new(store) as Box<dyn SecretStore>)
                     .map_err(|error| (2, store_error_message(&error)))
             }
@@ -863,7 +867,13 @@ fn cmd_edit() -> i32 {
     0
 }
 
-fn cmd_migrate(to_keychain: bool, dry_run: bool) -> i32 {
+fn cmd_migrate(cli: &Cli, to_keychain: bool, dry_run: bool) -> i32 {
+    if cli.local || cli.file.is_some() {
+        return fail(
+            3,
+            "migrate uses the global store; remove -l/--local and -f/--file",
+        );
+    }
     if !to_keychain {
         return fail(3, "specify --to-keychain to choose the migration target");
     }
@@ -924,7 +934,7 @@ fn cmd_migrate(to_keychain: bool, dry_run: bool) -> i32 {
 
     #[cfg(target_os = "macos")]
     {
-        let target = match backend::KeychainStore::new() {
+        let target = match backend::NativeKeychainStore::new() {
             Ok(target) => target,
             Err(error) => return fail(2, &store_error_message(&error)),
         };
@@ -997,7 +1007,7 @@ fn cmd_doctor() -> i32 {
     );
     if selected_backend == config::Backend::Keychain {
         #[cfg(target_os = "macos")]
-        match backend::KeychainStore::new() {
+        match backend::NativeKeychainStore::new() {
             Ok(_) => println!("  keychain: provider available (metadata not read)"),
             Err(error) => {
                 warnings += 1;

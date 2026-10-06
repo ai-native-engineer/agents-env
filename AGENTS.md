@@ -17,6 +17,7 @@ The release build does not install itself; copy it explicitly when dogfooding.
 ## Architecture (one responsibility per module)
 
 - `main.rs` — clap CLI + command handlers (`get`/`ls`/`run`/`set`/`copy`/`edit`/`doctor`), scope resolution, mask-set assembly.
+- `backend.rs` — file/Keychain secret-store seam, metadata-only discovery, value resolution, and value-free backend errors.
 - `aimode.rs` — agent-mode detection from env markers (+ config `markers=`).
 - `config.rs` — global store path resolution (always absolute; never per-command overridable).
 - `store.rs` — line-preserving `.env` parser, `KEY@tag` selector, round-trip editing.

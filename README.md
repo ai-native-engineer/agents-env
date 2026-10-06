@@ -45,7 +45,8 @@ agents-env run TAVILY_API_KEY@work -- curl -H "Authorization: Bearer {{TAVILY_AP
 | `set <KEY> <VALUE> --to <file>` | 로컬 파일에 비밀이 아닌 값 기록. 크리덴셜 형태면 경고. |
 | `copy <KEY[@tag]…> --to <file>` | 전역 store의 시크릿을 로컬 파일로 복사. 값은 출력하지 않음. `--as NEWKEY`로 키 이름 변경. |
 | `edit` | 전역 store를 `$EDITOR`로 연다. 사람 전용이며 에이전트 모드·비TTY에서는 거부. |
-| `doctor` | 파일 권한, gitignore 커버리지, 오래된 백업, 태그 없는 중복 키, Claude Code deny 규칙 점검. |
+| `migrate --to-keychain [--dry-run]` | 전역 `.env` 항목을 macOS Keychain으로 명시적으로 가져온다. 원본은 자동 삭제하지 않음. |
+| `doctor` | backend, 파일 권한, gitignore 커버리지, 오래된 백업, 태그 없는 중복 키, Claude Code deny 규칙 점검. |
 
 전체 옵션은 `agents-env --help`.
 
@@ -60,6 +61,29 @@ agents-env -f .env.production get DATABASE
 ```
 agents-env copy NOTION_API_KEY@demodev --to .env.local
 ```
+
+**전역 backend.** 기본값은 기존 `global.env` 파일이며, 설정하지 않아도
+현재 동작이 유지된다. macOS에서 Keychain을 선택하려면 설정 파일에
+`backend=keychain`을 명시한다.
+
+```
+printf '\nbackend=keychain\n' >> ~/.config/agents-env/config
+agents-env ls tavily       # Keychain metadata only
+agents-env run TAVILY_API_KEY -- some-cli
+```
+
+Keychain으로 옮기기 전에는 metadata만 확인하는 dry run을 먼저 실행한다.
+실제 migration도 원본 `.env`를 자동 삭제하지 않는다.
+
+```
+agents-env migrate --to-keychain --dry-run
+agents-env migrate --to-keychain
+```
+
+Keychain backend는 unsigned macOS CLI의 legacy Keychain을 사용한다. SSH,
+CI, launchd처럼 사용자 인증 UI를 열 수 없는 환경에서는 잠금이나 접근
+오류를 value-free 오류로 반환한다. `copy`는 어떤 backend를 사용하든
+로컬 `.env`에 평문을 만드는 명시적 export이므로 `run`을 우선 사용한다.
 
 ## 쓰기 가드
 
@@ -76,7 +100,7 @@ agents-env copy NOTION_API_KEY@demodev --to .env.local
 
 ## 한계
 
-마스킹은 심층 방어 수단이지 샌드박스가 아니다. 자식이 출력한 시크릿 원문은 잡지만, 자식이 재인코딩한 값(base64, URL 인코딩, 분할)은 잡지 못한다. `cat .env`나 Claude Code의 `@.env` 인라인 참조는 이 도구를 우회하며, 그쪽은 하네스 deny 규칙으로 막아야 한다. `doctor`가 `~/.claude/settings.json`의 `Read(**/.env)` 계열 deny 여부를 점검하므로, 두 레이어가 서로를 보완하도록 함께 설정하는 것을 권한다.
+마스킹은 심층 방어 수단이지 샌드박스가 아니다. 자식이 출력한 시크릿 원문은 잡지만, 자식이 재인코딩한 값(base64, URL 인코딩, 분할)은 잡지 못한다. Keychain도 값이 child env로 주입된 뒤의 프로세스 관찰 위험을 없애지 않는다. `cat .env`나 Claude Code의 `@.env` 인라인 참조는 이 도구를 우회하며, 그쪽은 하네스 deny 규칙으로 막아야 한다. `doctor`가 `~/.claude/settings.json`의 `Read(**/.env)` 계열 deny 여부를 점검하므로, 두 레이어가 서로를 보완하도록 함께 설정하는 것을 권한다.
 
 ### 코딩 어시스턴트 지원
 

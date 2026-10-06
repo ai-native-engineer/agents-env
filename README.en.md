@@ -45,7 +45,8 @@ Masking only touches the output stream (child → caller); it never alters the i
 | `set <KEY> <VALUE> --to <file>` | Write a non-secret value to a local file. Warns if it looks like a credential. |
 | `copy <KEY[@tag]…> --to <file>` | Copy secrets from the global store into a local file; values are not printed. `--as NEWKEY` renames. |
 | `edit` | Open the global store in `$EDITOR`. Human only; refused in agent mode and on non-TTY. |
-| `doctor` | Check file permissions, gitignore coverage, stale backups, untagged duplicate keys, Claude Code deny rules. |
+| `migrate --to-keychain [--dry-run]` | Explicitly import global `.env` entries into macOS Keychain. The source is never deleted automatically. |
+| `doctor` | Check the backend, file permissions, gitignore coverage, stale backups, untagged duplicate keys, and Claude Code deny rules. |
 
 Full options: `agents-env --help`.
 
@@ -60,6 +61,28 @@ agents-env -f .env.production get DATABASE
 ```
 agents-env copy NOTION_API_KEY@demodev --to .env.local
 ```
+
+**Global backend.** The default remains the existing `global.env` file. To opt
+into the macOS Keychain backend, add `backend=keychain` to the config file.
+
+```
+printf '\nbackend=keychain\n' >> ~/.config/agents-env/config
+agents-env ls tavily       # Keychain metadata only
+agents-env run TAVILY_API_KEY -- some-cli
+```
+
+Inspect a migration plan before writing any Keychain items. The real migration
+also keeps the source `.env` file; it never deletes it automatically.
+
+```
+agents-env migrate --to-keychain --dry-run
+agents-env migrate --to-keychain
+```
+
+The Keychain backend uses the legacy Keychain available to an unsigned macOS
+CLI. In SSH, CI, launchd, and other contexts that cannot open user-auth UI,
+locked or unavailable access returns a value-free error. `copy` remains an
+explicit plaintext export to a local `.env`, so prefer `run` when possible.
 
 ## Write guard
 
@@ -76,7 +99,7 @@ Every write makes a `<file>.YYMMDD.bak` backup first. From the second write of t
 
 ## Limitations
 
-Masking is defense in depth, not a sandbox. It catches a secret the child prints verbatim, but not one the child re-encodes (base64, URL-encoding, splitting). `cat .env` and Claude Code's `@.env` inline reference bypass the tool and must be stopped by the harness deny rules. `doctor` checks whether `~/.claude/settings.json` denies `Read(**/.env)` and friends, so configure both layers to back each other up.
+Masking is defense in depth, not a sandbox. It catches a secret the child prints verbatim, but not one the child re-encodes (base64, URL-encoding, splitting). Keychain also cannot remove process-observation risk after a value enters the child environment. `cat .env` and Claude Code's `@.env` inline reference bypass the tool and must be stopped by the harness deny rules. `doctor` checks whether `~/.claude/settings.json` denies `Read(**/.env)` and friends, so configure both layers to back each other up.
 
 ### Coding Assistant Support
 
