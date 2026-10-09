@@ -2,6 +2,7 @@
 name = "agents-env"
 version = "0.2.0"
 edition = "2024"
+rust-version = "1.88"
 description = "Env vars for AI agents — use secrets without ever seeing them"
 license = "MIT"
 repository = "https://github.com/ai-native-engineer/agents-env"
@@ -17,6 +18,7 @@ aho-corasick = "1.1.4"
 clap = { version = "4.6.1", features = ["derive"] }
 libc = "0.2.186"
 same-file = "1.0.6"
+shlex = "1.3.0"
 
 [dev-dependencies]
 assert_cmd = "2.2.2"

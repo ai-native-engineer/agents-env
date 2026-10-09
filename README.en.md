@@ -46,8 +46,56 @@ Masking only touches the output stream (child → caller); it never alters the i
 | `copy <KEY[@tag]…> --to <file>` | Copy secrets from the global store into a local file; values are not printed. `--as NEWKEY` renames. |
 | `edit` | Open the global store in `$EDITOR`. Human only; refused in agent mode and on non-TTY. |
 | `doctor` | Check file permissions, gitignore coverage, stale backups, untagged duplicate keys, Claude Code deny rules. |
+| `config show` / `config path` | Show effective settings or the config path without reading secret values. |
+| `config set <key> <value>` / `config reset <key>` | Change one setting or restore its default; refused in agent mode. |
 
 Full options: `agents-env --help`.
+
+## Settings and defaults
+
+The target platforms are macOS, Linux, and WSL. Native Windows is not supported.
+Building requires Rust 1.88 or newer; `copy` requires Git for protection checks.
+
+| Setting | Default | Accepted values |
+|---|---|---|
+| `global_store` | `global.env` next to the selected config file | Absolute, `~/`, or config-directory-relative path |
+| `markers` | Empty | Comma-separated extra environment variable names; built-in markers always remain active |
+| `editor` | `$VISUAL`, then `$EDITOR`, then `vi` | Executable and arguments, e.g. `code --wait` |
+| `agent_mode` | `auto` | `auto` or `always`; no protection-disabling value |
+
+The config path defaults to `~/.config/agents-env/config`. An absolute
+`XDG_CONFIG_HOME` selects `agents-env/config` under that directory first. If that
+file is absent but the legacy config exists, the legacy config and its paths
+are retained. Files are never moved or merged automatically. Empty or relative
+XDG values are ignored as required by the
+[XDG specification](https://specifications.freedesktop.org/basedir-spec/latest/).
+
+From a human terminal:
+
+```sh
+agents-env config show
+agents-env config set global_store '~/secrets/shared.env'
+agents-env config set editor 'code --wait'
+agents-env config set markers 'MY_AGENT_MODE,MY_OTHER_AGENT'
+agents-env config reset editor
+```
+
+Changing settings does not create or move the secret store. Humans register
+secrets with `agents-env edit`. Config writes preserve comments and other
+settings, back up once per day, and use atomic 0600 writes. Unknown keys,
+duplicate settings, and read failures produce errors rather than silently
+falling back to defaults. Use `config reset global_store` instead of an empty
+`global_store=` setting.
+
+`agent_mode=always` also refuses `edit`, config changes, and `--no-mask`. To
+return to `auto`, a human must edit the setting at `config path` directly.
+Editor arguments support quoting; shell expansion, pipes, and command
+substitution are not evaluated.
+
+Placing a global store at `~/.env` also protects projects below that directory
+from writes. Prefer the default location or a dedicated `~/secrets/` directory.
+
+## Scope and accounts
 
 **Scope and files.** The default scope is the global store. `-l`/`--local` reads `./.env`; `-f <name>` reads `./<name>`, which handles `.env.local`, `.env.production`, and the like.
 
@@ -71,6 +119,7 @@ agents-env copy NOTION_API_KEY@demodev --to .env.local
 - The target is refused if it is a symlink, has hard links, or is the same file as the global store.
 - Writing inside the global store's directory or any descendant is refused.
 - Inside a git repo, a secret-bearing `copy` target must be both untracked and gitignored. Otherwise it is a hard error (no override; fix `.gitignore`).
+- Backups of existing targets must also be untracked and ignored for both `set` and `copy`. Use `.env*` rather than only `.env`; a Git verification failure refuses the copy.
 
 Every write makes a `<file>.YYMMDD.bak` backup first. From the second write of the day onward it keeps that day's first backup, since the state before the day's work is the recovery point. It then writes to an `O_NOFOLLOW` temp file and renames it into place. Backups also start with `.env`, so one `.env*` gitignore line covers them.
 
@@ -119,8 +168,7 @@ AGENTS_ENV_AGENT_MODE=1 cline
 If your own harness can set a custom marker, register it in config:
 
 ```
-mkdir -p ~/.config/agents-env
-printf '\nmarkers=MY_AGENT_MODE\n' >> ~/.config/agents-env/config
+agents-env config set markers MY_AGENT_MODE
 MY_AGENT_MODE=1 agents-env get TAVILY
 ```
 
@@ -138,6 +186,13 @@ cargo install agents-env
 # before it's on crates.io:
 cargo install --git https://github.com/ai-native-engineer/agents-env
 ```
+
+For a local checkout, use `cargo install --path . --locked` and put the Cargo
+installation's `bin` directory on PATH. Store user-specific paths with
+`config set global_store`; do not embed them in distributed files.
+
+Validate with `cargo test --locked`, `cargo clippy --locked --all-targets -- -D warnings`,
+and `cargo fmt --all -- --check`. CI checks macOS/Linux with stable and Rust 1.88.
 
 ## License
 
