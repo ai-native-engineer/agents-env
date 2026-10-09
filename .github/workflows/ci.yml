@@ -18,7 +18,9 @@ jobs:
         rust: [stable, '1.88.0']
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24
+        with:
+          persist-credentials: false
       - name: Install toolchain
         run: |
           rustup toolchain install '${{ matrix.rust }}' --profile minimal --component rustfmt --component clippy
