@@ -46,8 +46,54 @@ agents-env run TAVILY_API_KEY@work -- curl -H "Authorization: Bearer {{TAVILY_AP
 | `copy <KEY[@tag]…> --to <file>` | 전역 store의 시크릿을 로컬 파일로 복사. 값은 출력하지 않음. `--as NEWKEY`로 키 이름 변경. |
 | `edit` | 전역 store를 `$EDITOR`로 연다. 사람 전용이며 에이전트 모드·비TTY에서는 거부. |
 | `doctor` | 파일 권한, gitignore 커버리지, 오래된 백업, 태그 없는 중복 키, Claude Code deny 규칙 점검. |
+| `config show` / `config path` | 시크릿 파일을 읽지 않고 유효 설정과 설정 파일 위치 조회. |
+| `config set <key> <value>` / `config reset <key>` | 설정 한 항목을 변경하거나 기본값으로 복원. 에이전트 모드에서는 변경 거부. |
 
 전체 옵션은 `agents-env --help`.
+
+## 설정과 기본값
+
+macOS, Linux, WSL의 Unix 환경을 대상으로 한다. Windows 네이티브는 지원하지
+않는다. 빌드에는 Rust 1.88 이상이 필요하고, `copy`의 보호 검증에는 Git이 필요하다.
+
+| 설정 | 기본값 | 허용 값 |
+|---|---|---|
+| `global_store` | 설정 파일과 같은 디렉터리의 `global.env` | 절대 경로, `~/` 경로, 설정 디렉터리 기준 상대 경로 |
+| `markers` | 빈 목록 | 쉼표로 나눈 추가 환경변수 이름. 내장 감지 마커는 항상 유지 |
+| `editor` | `$VISUAL`, `$EDITOR`, `vi` 순서 | 실행파일과 인자. 예: `code --wait` |
+| `agent_mode` | `auto` | `auto` 또는 `always`. 보호를 끄는 값은 없음 |
+
+기본 설정 파일은 `~/.config/agents-env/config`다. 절대 경로인
+`XDG_CONFIG_HOME`이 있으면 그 아래 `agents-env/config`를 먼저 확인한다.
+그 파일이 없고 기존 `~/.config/agents-env/config`가 있으면 기존 설정을
+사용한다. 파일을 자동으로 이동하거나 합치지 않는다. 상대/빈 XDG 값은
+[XDG 명세](https://specifications.freedesktop.org/basedir-spec/latest/)에 따라 무시한다.
+
+사람이 실행하는 터미널에서 다음처럼 설정할 수 있다.
+
+```sh
+agents-env config show
+agents-env config set global_store '~/secrets/shared.env'
+agents-env config set editor 'code --wait'
+agents-env config set markers 'MY_AGENT_MODE,MY_OTHER_AGENT'
+agents-env config reset editor
+```
+
+설정 변경은 원래 `.env`를 이동하거나 생성하지 않는다. 새 시크릿은 사람이
+`agents-env edit`로 등록한다. `config set/reset`은 주석과 나머지 설정을
+보존하며 변경 전 일별 백업과 0600 원자 쓰기를 사용한다. 알 수 없는 키,
+중복 설정, 읽기 오류는 명시적으로 실패하며 조용히 기본값으로 대체하지 않는다.
+`global_store=`를 비우는 대신 `config reset global_store`로 복원할 수 있다.
+
+`agent_mode=always`는 모든 실행을 에이전트로 취급하므로 `edit`, 설정 변경,
+`--no-mask`도 거부한다. `auto`로 되돌릴 때는 사람이 `config path`가 가리키는
+설정 파일에서 해당 줄을 직접 수정해야 한다. 편집기 인자는 따옴표를 지원하지만
+셸 변수, 파이프, 명령 치환은 실행하지 않는다.
+
+전역 파일을 `~/.env`처럼 넓은 디렉터리에 두면 그 하위 프로젝트의 쓰기도
+보호 가드에 막힌다. 기본 위치나 `~/secrets/` 같은 전용 디렉터리를 권장한다.
+
+## 스코프와 계정
 
 **스코프와 파일.** 기본 스코프는 전역 store다. `-l`/`--local`은 `./.env`를, `-f <name>`은 `./<name>`을 읽어 `.env.local`, `.env.production` 등 여러 파일을 다룬다.
 
@@ -71,6 +117,7 @@ agents-env copy NOTION_API_KEY@demodev --to .env.local
 - 타겟이 심볼릭링크거나, 하드링크를 가졌거나, 전역 store와 동일 파일이면 거부한다.
 - 전역 store 디렉토리와 그 하위 디렉토리에서의 쓰기를 거부한다.
 - git 레포 안에서는 시크릿을 쓰는 `copy` 타겟이 추적되지 않으면서 gitignore되어 있어야 한다. 아니면 하드 에러로 막는다(override 없음, `.gitignore` 수정 필요).
+- 기존 파일에 `set`/`copy`로 쓸 때는 백업도 Git에서 제외되어 있어야 한다. `.env` 한 줄만 제외하는 대신 `.env*`로 백업까지 보호한다. Git 검사 실패 시 복사하지 않는다.
 
 쓰기 전에는 `<file>.YYMMDD.bak` 백업을 만든다. 같은 날 두 번째 쓰기부터는 그날의 첫 백업을 유지한다(작업 시작 전 상태가 복구 지점이므로). 이후 `O_NOFOLLOW` 임시 파일에 쓰고 rename으로 교체한다. 백업도 `.env`로 시작하므로 `.env*` gitignore 한 줄로 함께 덮인다.
 
@@ -119,8 +166,7 @@ AGENTS_ENV_AGENT_MODE=1 cline
 직접 관리하는 하네스가 고유 마커를 넣을 수 있으면 config에 등록한다.
 
 ```
-mkdir -p ~/.config/agents-env
-printf '\nmarkers=MY_AGENT_MODE\n' >> ~/.config/agents-env/config
+agents-env config set markers MY_AGENT_MODE
 MY_AGENT_MODE=1 agents-env get TAVILY
 ```
 
@@ -138,6 +184,13 @@ cargo install agents-env
 # crates.io 등록 전이면:
 cargo install --git https://github.com/ai-native-engineer/agents-env
 ```
+
+소스에서 설치할 때는 `cargo install --path . --locked`를 사용할 수 있다.
+Cargo 설치 위치의 `bin` 디렉터리를 PATH에 넣는다. 사용자별 `.env` 경로를
+배포 파일에 넣지 않고 `config set global_store`로 지정한다.
+
+검증 명령은 `cargo test --locked`, `cargo clippy --locked --all-targets -- -D warnings`,
+`cargo fmt --all -- --check`다. CI는 macOS/Linux에서 stable과 Rust 1.88을 검사한다.
 
 ## 라이선스
 

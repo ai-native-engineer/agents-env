@@ -49,6 +49,7 @@ impl Sandbox {
     /// Build a command with a clean environment. `agent` toggles agent mode.
     fn cmd(&self, agent: bool) -> Command {
         let mut c = Command::cargo_bin("agents-env").unwrap();
+        c.env_clear();
         c.current_dir(self.cwd.path());
         for m in AI_MARKERS {
             c.env_remove(m);
@@ -67,6 +68,7 @@ impl Sandbox {
 
         let mut command = std::process::Command::new("/bin/sh");
         command
+            .env_clear()
             .arg0(name)
             .args(["-c", script, name, env!("CARGO_BIN_EXE_agents-env")])
             .current_dir(self.cwd.path())
@@ -259,6 +261,256 @@ fn run_propagates_exit_code() {
         .args(["run", "TAVILY_API_KEY", "--", "sh", "-c", "exit 7"])
         .assert()
         .code(7);
+}
+
+#[test]
+fn spawn_failure_does_not_print_substituted_executable_secret() {
+    let sb = Sandbox::new();
+    let out = sb
+        .cmd(true)
+        .args(["run", "TAVILY_API_KEY", "--", "{{TAVILY_API_KEY}}"])
+        .assert()
+        .code(127);
+    let stderr = String::from_utf8_lossy(&out.get_output().stderr);
+    assert!(
+        !stderr.contains("tvly-aaaa1111bbbb2222"),
+        "spawn diagnostic leaked a fixture"
+    );
+}
+
+#[test]
+fn copy_refuses_when_git_cannot_be_executed() {
+    let sb = Sandbox::new();
+    git(sb.cwd.path(), &["init", "-q"]);
+    sb.cmd(true)
+        .env("PATH", sb.home.path().join("no-tools"))
+        .args(["copy", "TAVILY_API_KEY", "--to", ".env"])
+        .assert()
+        .code(2);
+    assert!(!sb.cwd.path().join(".env").exists());
+}
+
+#[test]
+fn dangling_backup_symlink_never_receives_source_contents() {
+    let sb = Sandbox::new();
+    let outside = sb.cwd.path().join("outside.txt");
+    fs::write(sb.cwd.path().join(".env"), "KEEP=fixture-private\n").unwrap();
+    let date = std::process::Command::new("date")
+        .arg("+%y%m%d")
+        .output()
+        .unwrap();
+    let date = String::from_utf8(date.stdout).unwrap();
+    let backup = sb.cwd.path().join(format!(".env.{}.bak", date.trim()));
+    std::os::unix::fs::symlink(&outside, backup).unwrap();
+    sb.cmd(true)
+        .args(["set", "PORT", "8080"])
+        .assert()
+        .failure();
+    assert!(!outside.exists());
+    assert_eq!(sb.local(".env"), "KEEP=fixture-private\n");
+}
+
+#[test]
+fn copy_checks_backup_gitignore_before_second_write() {
+    let sb = Sandbox::new();
+    git(sb.cwd.path(), &["init", "-q"]);
+    fs::write(sb.cwd.path().join(".gitignore"), ".env\n").unwrap();
+    sb.cmd(true)
+        .args(["copy", "TAVILY_API_KEY"])
+        .assert()
+        .success();
+    let original = sb.local(".env");
+    sb.cmd(true)
+        .args(["copy", "GEMINI_API_KEY@work"])
+        .assert()
+        .code(2);
+    assert_eq!(sb.local(".env"), original);
+    assert!(
+        fs::read_dir(sb.cwd.path()).unwrap().all(|e| e
+            .unwrap()
+            .path()
+            .extension()
+            .is_none_or(|e| e != "bak"))
+    );
+    fs::write(sb.cwd.path().join(".gitignore"), ".env*\n").unwrap();
+    sb.cmd(true)
+        .args(["copy", "GEMINI_API_KEY@work"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn nonsecret_edit_also_protects_existing_secret_backup() {
+    let sb = Sandbox::new();
+    git(sb.cwd.path(), &["init", "-q"]);
+    fs::write(sb.cwd.path().join(".gitignore"), ".env\n").unwrap();
+    fs::write(sb.cwd.path().join(".env"), "KEY=fixture-existing-secret\n").unwrap();
+    sb.cmd(true).args(["set", "PORT", "3000"]).assert().code(2);
+    assert_eq!(sb.local(".env"), "KEY=fixture-existing-secret\n");
+}
+
+#[test]
+fn config_defaults_do_not_require_a_secret_store() {
+    let sb = Sandbox::new();
+    fs::remove_file(sb.global_path()).unwrap();
+    let out = sb.cmd(true).args(["config", "show"]).assert().success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout);
+    assert!(stdout.contains("global.env"));
+    assert!(stdout.contains("auto"));
+    assert!(stdout.contains("markers"));
+}
+
+#[test]
+fn config_cannot_make_its_backup_the_secret_store() {
+    let sb = Sandbox::new();
+    sb.cmd(false)
+        .args(["config", "set", "markers", "MY_AGENT"])
+        .assert()
+        .success();
+    let date = std::process::Command::new("date")
+        .arg("+%y%m%d")
+        .output()
+        .unwrap();
+    let date = String::from_utf8(date.stdout).unwrap();
+    let backup = format!("config.{}.bak", date.trim());
+    sb.cmd(false)
+        .args(["config", "set", "global_store", &backup])
+        .assert()
+        .code(3);
+    assert_eq!(fs::read_to_string(sb.global_path()).unwrap(), GLOBAL);
+    assert!(
+        !sb.home
+            .path()
+            .join(".config/agents-env")
+            .join(backup)
+            .exists()
+    );
+}
+
+#[test]
+fn config_set_global_store_and_reset_are_cwd_independent() {
+    let sb = Sandbox::new();
+    let source = sb.home.path().join("custom store.env");
+    fs::write(&source, "CUSTOM_KEY=fixture-custom-secret\n").unwrap();
+    sb.cmd(false)
+        .args(["config", "set", "global_store", "~/custom store.env"])
+        .assert()
+        .success();
+    let out = sb.cmd(true).args(["get", "CUSTOM"]).assert().success();
+    assert!(!String::from_utf8_lossy(&out.get_output().stdout).contains("fixture-custom-secret"));
+    sb.cmd(false)
+        .args(["config", "reset", "global_store"])
+        .assert()
+        .success();
+    sb.cmd(true).args(["get", "TAVILY"]).assert().success();
+    assert_eq!(
+        fs::read_to_string(source).unwrap(),
+        "CUSTOM_KEY=fixture-custom-secret\n"
+    );
+    assert_eq!(fs::read_to_string(sb.global_path()).unwrap(), GLOBAL);
+}
+
+#[test]
+fn config_agent_mode_and_markers_cannot_disable_protection() {
+    let sb = Sandbox::new();
+    sb.cmd(false)
+        .args(["config", "set", "markers", "MY_AGENT"])
+        .assert()
+        .success();
+    sb.cmd(false)
+        .env("MY_AGENT", "1")
+        .args(["run", "--no-mask", "TAVILY_API_KEY", "--", "true"])
+        .assert()
+        .code(2);
+    sb.cmd(true)
+        .args(["config", "set", "global_store", "other.env"])
+        .assert()
+        .code(2);
+    sb.cmd(false)
+        .args(["config", "set", "agent_mode", "always"])
+        .assert()
+        .success();
+    let out = sb.cmd(false).args(["get", "TAVILY"]).assert().success();
+    assert!(!String::from_utf8_lossy(&out.get_output().stdout).contains("tvly-aaaa1111bbbb2222"));
+    sb.cmd(false)
+        .args(["run", "--no-mask", "TAVILY_API_KEY", "--", "true"])
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn invalid_config_fails_without_echoing_contents() {
+    let sb = Sandbox::new();
+    let path = sb.home.path().join(".config/agents-env/config");
+    for text in [
+        "unknown=fixture-secret-value\n",
+        "markers=MY-AGENT\n",
+        "agent_mode=never\n",
+        "markers=A\nmarkers=B\n",
+    ] {
+        fs::write(&path, text).unwrap();
+        let out = sb.cmd(false).args(["get", "TAVILY"]).assert().code(3);
+        let output = out.get_output();
+        assert!(output.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("fixture-secret-value"));
+    }
+}
+
+#[test]
+fn missing_or_relative_home_fails_with_usage_error_not_panic() {
+    let sb = Sandbox::new();
+    sb.cmd(false)
+        .env_remove("HOME")
+        .args(["config", "show"])
+        .assert()
+        .code(3);
+    sb.cmd(false)
+        .env("HOME", "relative")
+        .args(["config", "show"])
+        .assert()
+        .code(3);
+    sb.cmd(false)
+        .env_remove("HOME")
+        .arg("--help")
+        .assert()
+        .success();
+}
+
+#[test]
+fn xdg_fallback_preserves_legacy_store_configuration() {
+    let sb = Sandbox::new();
+    let xdg = sb.home.path().join("custom-config");
+    let out = sb
+        .cmd(true)
+        .env("XDG_CONFIG_HOME", &xdg)
+        .args(["config", "path"])
+        .assert()
+        .success();
+    assert!(String::from_utf8_lossy(&out.get_output().stdout).contains("custom-config"));
+    fs::write(
+        sb.home.path().join(".config/agents-env/config"),
+        "markers=MY_AGENT\n",
+    )
+    .unwrap();
+    let out = sb
+        .cmd(true)
+        .env("XDG_CONFIG_HOME", &xdg)
+        .args(["get", "TAVILY"])
+        .assert()
+        .success();
+    assert!(String::from_utf8_lossy(&out.get_output().stdout).contains("TAVILY_API_KEY"));
+    fs::create_dir_all(xdg.join("agents-env")).unwrap();
+    fs::write(xdg.join("agents-env/config"), "global_store=global.env\n").unwrap();
+    fs::write(
+        xdg.join("agents-env/global.env"),
+        "XDG_KEY=fixture-xdg-secret\n",
+    )
+    .unwrap();
+    sb.cmd(true)
+        .env("XDG_CONFIG_HOME", &xdg)
+        .args(["get", "XDG_KEY"])
+        .assert()
+        .success();
 }
 
 #[test]

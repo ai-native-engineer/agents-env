@@ -39,7 +39,9 @@ pub fn agent_mode() -> bool {
         .iter()
         .any(|m| std::env::var_os(m).is_some_and(|v| !v.is_empty()));
     builtin
-        || extra_markers()
+        || crate::config::current().agent_mode_always
+        || crate::config::current()
+            .markers
             .iter()
             .any(|m| std::env::var_os(m).is_some_and(|v| !v.is_empty()))
         || agent_cli_ancestor()
@@ -85,22 +87,4 @@ fn agent_cli_ancestor() -> bool {
 #[cfg(not(unix))]
 fn agent_cli_ancestor() -> bool {
     false
-}
-
-/// User-configured extra markers from `markers=` in the config file.
-fn extra_markers() -> Vec<String> {
-    let path = crate::config::config_path();
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    for line in text.lines() {
-        if let Some(rest) = line.trim().strip_prefix("markers=") {
-            return rest
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-        }
-    }
-    Vec::new()
 }

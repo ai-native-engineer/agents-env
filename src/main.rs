@@ -54,6 +54,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Inspect or change non-secret settings (never reads secret values)
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     /// Look up keys by pattern (case-insensitive substring on key names)
     Get {
         #[arg(value_name = "PATTERN")]
@@ -106,9 +111,25 @@ enum Cmd {
     Doctor,
 }
 
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Print the effective settings and their defaults
+    Show,
+    /// Print the selected configuration file path
+    Path,
+    /// Set one setting; global_store accepts an absolute, ~/ or config-relative path
+    Set { key: String, value: String },
+    /// Restore one setting to its default without touching the global env file
+    Reset { key: String },
+}
+
 fn main() {
     let cli = Cli::parse();
+    if let Err(message) = config::init() {
+        std::process::exit(fail(3, &message));
+    }
     let code = match &cli.cmd {
+        Cmd::Config { command } => cmd_config(command),
         Cmd::Get { pattern } => cmd_get(&cli, pattern),
         Cmd::Ls { pattern } => cmd_ls(&cli, pattern.as_deref()),
         Cmd::Run {
@@ -127,6 +148,38 @@ fn main() {
         Cmd::Doctor => cmd_doctor(),
     };
     std::process::exit(code);
+}
+
+fn cmd_config(command: &ConfigCommand) -> i32 {
+    match command {
+        ConfigCommand::Show => println!("{}", config::show()),
+        ConfigCommand::Path => println!("{}", config::config_path().display()),
+        ConfigCommand::Set { key, value } => {
+            if aimode::agent_mode() {
+                return fail(
+                    2,
+                    "configuration changes are human-only; inspect with `config show`",
+                );
+            }
+            if let Err(message) = config::update(key, Some(value)) {
+                return fail(3, &message);
+            }
+            println!("configured {key} in {}", config::config_path().display());
+        }
+        ConfigCommand::Reset { key } => {
+            if aimode::agent_mode() {
+                return fail(
+                    2,
+                    "configuration changes are human-only; inspect with `config show`",
+                );
+            }
+            if let Err(message) = config::update(key, None) {
+                return fail(3, &message);
+            }
+            println!("reset {key} in {}", config::config_path().display());
+        }
+    }
+    0
 }
 
 // ---------------------------------------------------------------- scope
@@ -232,7 +285,7 @@ fn selector_example(f: &EnvFile, matches: &[(usize, &store::Entry)]) -> String {
         && let Some(c) = &e.comment
     {
         let tag = c.trim_start_matches('#').trim();
-        // Leading run of identifier-ish chars: "senugw0u@gmail.com" -> "senugw0u",
+        // Leading run of identifier-ish chars: "user@example.com" -> "user",
         // "jax contact" -> "jax". Enough to disambiguate without an ugly @-in-@.
         let token: String = tag
             .chars()
@@ -264,8 +317,7 @@ fn cmd_ls(cli: &Cli, pattern: Option<&str>) -> i32 {
 // ---------------------------------------------------------------- run
 
 fn cmd_run(cli: &Cli, selectors: &[String], all: bool, no_mask: bool, command: &[String]) -> i32 {
-    let agent = aimode::agent_mode();
-    if no_mask && agent {
+    if no_mask && aimode::agent_mode() {
         return fail(2, "--no-mask is not allowed in agent mode");
     }
     if command.is_empty() {
@@ -390,6 +442,10 @@ fn cmd_set(key: &str, value: &str, to: &str) -> i32 {
         Ok(a) => a,
         Err(m) => return fail(2, &m),
     };
+    // Even a non-secret edit can back up credentials already in the file.
+    if let Err(message) = guard::git_backup_check(&target) {
+        return fail(2, &message);
+    }
     if let Err(m) = write_back(&target, &f) {
         return fail(1, &m);
     }
@@ -457,6 +513,9 @@ fn cmd_copy(selectors: &[String], to: &str, rename: Option<&str>) -> i32 {
             Err(m) => return fail(2, &m),
         }
     }
+    if let Err(message) = guard::git_backup_check(&target) {
+        return fail(2, &message);
+    }
     if let Err(m) = write_back(&target, &f) {
         return fail(1, &m);
     }
@@ -521,14 +580,50 @@ fn cmd_edit() -> i32 {
     {
         return fail(1, &format!("cannot create {}: {e}", dir.display()));
     }
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-    let status = std::process::Command::new(&editor).arg(&path).status();
+    let editor = config::current()
+        .editor
+        .clone()
+        .or_else(|| {
+            std::env::var("VISUAL")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .or_else(|| {
+            std::env::var("EDITOR")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or_else(|| "vi".to_string());
+    let editor = match editor_args(&editor) {
+        Ok(args) => args,
+        Err(message) => return fail(3, &message),
+    };
+    // Create the human-owned store privately before launching an editor; the
+    // editor's own default umask must not expose a newly created secret file.
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Err(error) = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .open(&path)
+    {
+        return fail(1, &format!("cannot prepare global store: {error}"));
+    }
+    if let Err(error) = guard::set_mode_0600(&path) {
+        return fail(1, &format!("cannot secure global store: {error}"));
+    }
+    let status = std::process::Command::new(&editor[0])
+        .args(&editor[1..])
+        .arg(&path)
+        .status();
     match status {
         Ok(s) if s.success() => {}
         Ok(s) => return s.code().unwrap_or(1),
-        Err(e) => return fail(1, &format!("cannot launch editor '{editor}': {e}")),
+        Err(e) => return fail(1, &format!("cannot launch editor: {e}")),
     }
-    let _ = guard::set_mode_0600(&path);
+    if let Err(error) = guard::set_mode_0600(&path) {
+        return fail(1, &format!("cannot secure edited global store: {error}"));
+    }
     // Post-edit lint: keep the KEY@tag selector scheme intact. Names and line
     // numbers only — never values.
     if let Ok(f) = EnvFile::load(&path) {
@@ -548,6 +643,14 @@ fn cmd_edit() -> i32 {
         }
     }
     0
+}
+
+fn editor_args(command: &str) -> Result<Vec<String>, String> {
+    let args = shlex::split(command).ok_or("editor has unmatched quotes")?;
+    if args.first().is_none_or(|s| s.is_empty()) {
+        return Err("editor must contain an executable".to_string());
+    }
+    Ok(args)
 }
 
 // ---------------------------------------------------------------- doctor
@@ -656,5 +759,18 @@ fn cmd_doctor() -> i32 {
     } else {
         println!("{warnings} warning(s)");
         1
+    }
+}
+
+#[cfg(test)]
+mod editor_tests {
+    #[test]
+    fn editor_arguments_support_spaces_without_shell_expansion() {
+        assert_eq!(
+            super::editor_args("'my editor' --wait '$HOME'").unwrap(),
+            ["my editor", "--wait", "$HOME"]
+        );
+        assert!(super::editor_args("'unterminated").is_err());
+        assert!(super::editor_args("  ").is_err());
     }
 }

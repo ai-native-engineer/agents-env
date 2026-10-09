@@ -19,21 +19,23 @@ into the child process you launch; your transcript only ever holds key names and
 
 ## Setup (run once, if `agents-env: command not found`)
 
-Install the CLI, then point the global store at the user's existing master `.env`:
+Install the CLI for macOS, Linux, or WSL (Rust 1.88+), then inspect settings:
 
 ```
-cargo install agents-env          # or: brew install ai-native-engineer/tap/agents-env (planned)
+cargo install agents-env
 # fallback if not on crates.io yet:
 cargo install --git https://github.com/ai-native-engineer/agents-env
 
-mkdir -p ~/.config/agents-env
-# only if no config exists — never overwrite an existing one:
-[ -f ~/.config/agents-env/config ] || echo 'global_store=~/.dotfiles/.env' > ~/.config/agents-env/config
+agents-env config show
+agents-env config path
 ```
 
-Set `global_store=` to wherever the user keeps their master `.env` (ask if unsure;
-default when unset is `~/.config/agents-env/global.env`). Then `agents-env doctor`
-to confirm setup and check the harness deny rules. This works the same for Grok,
+Use the effective path from `config show`; respect existing settings and XDG
+resolution. A human can choose an existing store with `config set global_store`
+or register new secrets through `edit`. Config changes are refused in agent
+mode because redirecting the global store changes the write-protection boundary.
+Never remove agent markers to get around this check. Then use `agents-env doctor`
+to check setup and the harness deny rules. This works the same for Grok,
 Codex, OpenCode, Claude Code, and AGY — only the optional plugin (`claude plugin install
 agents-env@agents-env`) is Claude-specific.
 
@@ -75,11 +77,10 @@ AGENTS_ENV_AGENT_MODE=1 aider
 AGENTS_ENV_AGENT_MODE=1 cline
 ```
 
-If the harness sets its own stable marker, add it to config:
+If the harness sets its own stable marker, a human can configure it:
 
 ```
-mkdir -p ~/.config/agents-env
-printf '\nmarkers=MY_AGENT_MODE\n' >> ~/.config/agents-env/config
+agents-env config set markers MY_AGENT_MODE
 MY_AGENT_MODE=1 agents-env get TAVILY
 ```
 
