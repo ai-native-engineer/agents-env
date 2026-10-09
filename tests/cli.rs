@@ -326,11 +326,11 @@ fn copy_checks_backup_gitignore_before_second_write() {
         .code(2);
     assert_eq!(sb.local(".env"), original);
     assert!(
-        fs::read_dir(sb.cwd.path()).unwrap().all(|e| !e
+        fs::read_dir(sb.cwd.path()).unwrap().all(|e| e
             .unwrap()
             .path()
             .extension()
-            .is_some_and(|e| e == "bak"))
+            .is_none_or(|e| e != "bak"))
     );
     fs::write(sb.cwd.path().join(".gitignore"), ".env*\n").unwrap();
     sb.cmd(true)
