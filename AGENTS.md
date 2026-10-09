@@ -6,19 +6,30 @@ Rust CLI that lets an AI agent use secrets without seeing their values. User-fac
 
 ```
 cargo build            # debug
-cargo test             # embedded unit tests (src) + integration tests (tests/cli.rs)
-cargo clippy --all-targets   # must stay at 0 warnings
-cargo build --release  # release binary (strip+lto)
-cp target/release/agents-env ~/.local/bin/  # local dogfooding install
+cargo fmt --all -- --check
+cargo test --locked    # embedded unit tests (src) + integration tests (tests/cli.rs)
+cargo clippy --locked --all-targets -- -D warnings
+cargo build --locked --release  # release binary (strip+lto)
 ```
 
-The release build does not install itself; copy it explicitly when dogfooding.
+## Default completion: merge and install
+
+Implementation and fix requests in this repository authorize the full workflow below without another prompt. An explicit plan-only, review-only, or no-merge request takes precedence.
+
+1. Run the checks above and review the final diff. Commit only task-owned paths, push a topic branch, and create or update its PR against `main`.
+2. Mark the PR ready and wait for all CI checks on its exact head to pass. Resolve blocking review findings, then merge through the PR with a matching-head guard. Do not bypass failed checks or branch protections.
+3. Verify the server reports the PR merged, then fast-forward a clean local `main` to the remote merge result and build its release binary. Preserve unrelated work; use a clean worktree if necessary.
+4. Resolve the installed executable with `command -v agents-env` and follow symlinks to its actual destination. If absent, use `~/.local/bin/agents-env`. Keep a rollback copy in an OS-provided temporary directory, stage the new executable beside the destination, and atomically rename it into place. Never overwrite a running executable in place.
+5. Compare built and installed SHA-256 hashes, check the installed CLI, and run isolated smoke tests with a temporary HOME and fake secrets for config/path selection, agent guards, masking, interactive output, and child exit codes. On failure, restore the previous binary and verify the rollback before reporting it.
+6. Report the PR/merge commit, local `main` sync, installed path, and actual verification results. Completion includes the installed binary working; a release build alone is insufficient.
+
+This authorization covers the local CLI and its PR workflow. Registry publishing, real secret/config changes, and installation on other machines require their own request.
 
 ## Architecture (one responsibility per module)
 
-- `main.rs` — clap CLI + command handlers (`get`/`ls`/`run`/`set`/`copy`/`edit`/`doctor`), scope resolution, mask-set assembly.
+- `main.rs` — clap CLI + command handlers (`get`/`ls`/`run`/`set`/`copy`/`edit`/`doctor`/`config`), scope resolution, mask-set assembly.
 - `aimode.rs` — agent-mode detection from env markers (+ config `markers=`).
-- `config.rs` — global store path resolution (always absolute; never per-command overridable).
+- `config.rs` — typed settings loaded once per invocation, portable path resolution, guarded config edits. The global store resolves to an absolute path and is never per-command overridable.
 - `store.rs` — line-preserving `.env` parser, `KEY@tag` selector, round-trip editing.
 - `guard.rs` — write-side guards, backup, atomic write, git-ignore gate, secret heuristic.
 - `mask.rs` — child injection + leftmost-longest streaming output masking + `{{KEY}}` argv substitution.
