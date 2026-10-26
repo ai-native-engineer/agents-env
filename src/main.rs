@@ -113,7 +113,7 @@ enum Cmd {
     Generate { key: String },
     /// Open the global store in $EDITOR (humans only — refused in agent mode)
     Edit,
-    /// Audit protection coverage: permissions, gitignore, backups, dup keys
+    /// Audit syntax, permissions, gitignore, backups and duplicate keys without printing values
     Doctor,
 }
 
@@ -653,8 +653,11 @@ fn cmd_edit() -> i32 {
     // Post-edit lint: keep the KEY@tag selector scheme intact. Names and line
     // numbers only — never values.
     if let Ok(f) = EnvFile::load(&path) {
-        for idx in f.unparseable_lines() {
-            println!("{YELLOW}lint:{RESET} line {} is not parseable", idx + 1);
+        for (index, reason) in f.syntax_issues() {
+            println!(
+                "{YELLOW}lint:{RESET} line {} is not parseable: {reason}",
+                index + 1
+            );
         }
         let mut seen: Vec<String> = Vec::new();
         for (i, e) in f.entries() {
@@ -694,20 +697,30 @@ fn cmd_doctor() -> i32 {
                 warnings += 1;
                 println!("  warn: permissions {mode:o} — consider chmod 600");
             }
-            if let Ok(f) = EnvFile::load(&gpath) {
-                let mut seen: Vec<String> = Vec::new();
-                for (_, e) in f.entries() {
-                    if f.occurrences(&e.key).len() > 1
-                        && e.comment.is_none()
-                        && !seen.contains(&e.key)
-                    {
-                        seen.push(e.key.clone());
+            match EnvFile::load(&gpath) {
+                Ok(f) => {
+                    for (index, reason) in f.syntax_issues() {
                         warnings += 1;
-                        println!(
-                            "  warn: duplicate key {} has untagged entries (KEY@tag selection)",
-                            e.key
-                        );
+                        println!("  warn: line {} is not parseable: {reason}", index + 1);
                     }
+                    let mut seen: Vec<String> = Vec::new();
+                    for (_, e) in f.entries() {
+                        if f.occurrences(&e.key).len() > 1
+                            && e.comment.is_none()
+                            && !seen.contains(&e.key)
+                        {
+                            seen.push(e.key.clone());
+                            warnings += 1;
+                            println!(
+                                "  warn: duplicate key {} has untagged entries (KEY@tag selection)",
+                                e.key
+                            );
+                        }
+                    }
+                }
+                Err(_) => {
+                    warnings += 1;
+                    println!("  warn: cannot read global store as UTF-8; no contents were printed");
                 }
             }
         }

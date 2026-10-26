@@ -233,9 +233,9 @@ fn candidate(text: &str, path: &Path, key: &str, value: &str) -> Result<String> 
         ));
     }
     let original = store::EnvFile::parse(path, text);
-    if let Some(line) = original.unparseable_lines().first() {
+    if let Some((line, reason)) = original.syntax_issues().next() {
         return Err(refused(format!(
-            "global store line {} is not parseable; no key was added",
+            "global store line {} is not parseable: {reason}; no key was added",
             line + 1
         )));
     }

@@ -24,6 +24,21 @@ pub struct Entry {
 pub struct Line {
     pub raw: String,
     pub entry: Option<Entry>,
+    error: Option<&'static str>,
+}
+
+impl Line {
+    fn parse(raw: &str) -> Self {
+        let (entry, error) = match parse_entry(raw) {
+            Ok(entry) => (entry, None),
+            Err(error) => (None, Some(error)),
+        };
+        Self {
+            raw: raw.to_string(),
+            entry,
+            error,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -40,9 +55,9 @@ pub enum SelectError {
 
 /// Validate a key before inserting it into an env file.
 ///
-/// The parser accepts exactly this shell-style identifier grammar. Keeping the
-/// write-side check in the same module prevents a user-supplied key from
-/// injecting a newline, another assignment, or other raw file structure.
+/// New writes use portable shell-style identifiers. Reading also accepts
+/// digit-prefixed existing dotenv names without renaming them. This write-side
+/// check prevents inserting a newline, assignment or other raw file structure.
 pub fn validate_key(key: &str) -> Result<(), String> {
     let mut chars = key.chars();
     let Some(first) = chars.next() else {
@@ -74,13 +89,7 @@ impl EnvFile {
     }
 
     pub fn parse(path: &Path, text: &str) -> EnvFile {
-        let lines = text
-            .lines()
-            .map(|l| Line {
-                raw: l.to_string(),
-                entry: parse_entry(l),
-            })
-            .collect();
+        let lines = text.lines().map(Line::parse).collect();
         EnvFile {
             path: path.to_path_buf(),
             lines,
@@ -156,8 +165,7 @@ impl EnvFile {
             .clone();
         let mut raw = line.raw.clone();
         raw.replace_range(span, new_value_raw);
-        line.entry = parse_entry(&raw);
-        line.raw = raw;
+        *line = Line::parse(&raw);
     }
 
     pub fn append(&mut self, key: &str, value_raw: &str, comment: Option<&str>) {
@@ -165,10 +173,7 @@ impl EnvFile {
             Some(c) => format!("{key}={value_raw} {c}"),
             None => format!("{key}={value_raw}"),
         };
-        self.lines.push(Line {
-            entry: parse_entry(&raw),
-            raw,
-        });
+        self.lines.push(Line::parse(&raw));
     }
 
     /// Line indices where `key` appears (exact, case-sensitive — write side).
@@ -181,16 +186,15 @@ impl EnvFile {
 
     /// Lines that are neither blank, full-line comments, nor parseable entries.
     pub fn unparseable_lines(&self) -> Vec<usize> {
+        self.syntax_issues().map(|(index, _)| index).collect()
+    }
+
+    /// Static reasons and line numbers only; no source text, keys or values.
+    pub fn syntax_issues(&self) -> impl Iterator<Item = (usize, &'static str)> + '_ {
         self.lines
             .iter()
             .enumerate()
-            .filter(|(_, l)| {
-                l.entry.is_none()
-                    && !l.raw.trim().is_empty()
-                    && !l.raw.trim_start().starts_with('#')
-            })
-            .map(|(i, _)| i)
-            .collect()
+            .filter_map(|(index, line)| line.error.map(|error| (index, error)))
     }
 
     pub fn serialize(&self) -> String {
@@ -216,14 +220,23 @@ pub fn quote_value(v: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-fn parse_entry(raw: &str) -> Option<Entry> {
+fn parse_entry(raw: &str) -> Result<Option<Entry>, &'static str> {
+    if raw.contains('\0') {
+        return Err("NUL bytes are not supported");
+    }
+    if raw.starts_with('\u{feff}') {
+        return Err("a UTF-8 byte order mark is not supported");
+    }
+    if raw.trim().is_empty() || raw.trim_start().starts_with('#') {
+        return Ok(None);
+    }
     let bytes = raw.as_bytes();
     let mut i = 0;
     while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
         i += 1;
     }
     if i >= bytes.len() || bytes[i] == b'#' {
-        return None;
+        return Ok(None);
     }
     if raw[i..].starts_with("export ") || raw[i..].starts_with("export\t") {
         i += 7;
@@ -232,15 +245,35 @@ fn parse_entry(raw: &str) -> Option<Entry> {
         }
     }
     let key_start = i;
-    if i >= bytes.len() || !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
-        return None;
+    if i >= bytes.len() || !(bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        return Err(if raw[i..].starts_with("//") || raw[i..].starts_with(';') {
+            "only '#' starts a dotenv comment; other comment markers are not supported"
+        } else if raw[i..].starts_with('[') {
+            "section headers are not supported in dotenv files"
+        } else if raw[i..].starts_with(['\'', '"']) {
+            "a quoted line without a variable name is not an assignment; multiline values are not supported"
+        } else if raw[i..].starts_with('`') {
+            "backtick or Markdown syntax is not supported in dotenv files"
+        } else if raw[i..].starts_with(char::is_whitespace) {
+            "only ASCII spaces and tabs may precede a variable name"
+        } else if !raw[i..].is_ascii() {
+            "a variable name must use ASCII letters, digits or underscores"
+        } else {
+            "expected an environment variable name followed by '='"
+        });
     }
     while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
         i += 1;
     }
     let key = raw[key_start..i].to_string();
     if i >= bytes.len() || bytes[i] != b'=' {
-        return None;
+        return Err(
+            if i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+                "whitespace between a variable name and '=' is not supported"
+            } else {
+                "expected '=' immediately after the variable name"
+            },
+        );
     }
     i += 1;
     let vstart = i;
@@ -299,12 +332,14 @@ fn parse_entry(raw: &str) -> Option<Entry> {
             }
         }
         if !closed {
-            return None;
+            return Err("unterminated double-quoted value; multiline values are not supported");
         }
         (val, j)
     } else if i < bytes.len() && bytes[i] == b'\'' {
         let rest = &raw[i + 1..];
-        let p = rest.find('\'')?;
+        let p = rest
+            .find('\'')
+            .ok_or("unterminated single-quoted value; multiline values are not supported")?;
         (rest[..p].to_string(), i + 1 + p + 1)
     } else {
         // Bare value: runs until a `#` preceded by whitespace, or end of line.
@@ -329,15 +364,15 @@ fn parse_entry(raw: &str) -> Option<Entry> {
         None
     } else {
         // Trailing garbage after a quoted value — not a well-formed entry.
-        return None;
+        return Err("unexpected characters after a quoted value");
     };
 
-    Some(Entry {
+    Ok(Some(Entry {
         key,
         value,
         value_span: vstart..vend,
         comment,
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -362,6 +397,21 @@ mod tests {
         assert_eq!(entries[0].1.value, "8080");
         assert_eq!(entries[0].1.comment.as_deref(), Some("# local"));
         assert_eq!(entries[1].1.value, "plain");
+    }
+
+    #[test]
+    fn reads_existing_numeric_names_without_relaxing_write_validation() {
+        let source = "1SERVICE_KEY=\"fixture-existing\" # work\n123='fixture-number'\n";
+        let file = EnvFile::parse(Path::new("fixture"), source);
+        assert!(file.unparseable_lines().is_empty());
+        assert_eq!(
+            file.select("1service_key@work").unwrap().1.value,
+            "fixture-existing"
+        );
+        assert_eq!(file.select("123").unwrap().1.value, "fixture-number");
+        assert_eq!(file.serialize(), source);
+        assert!(validate_key("1SERVICE_KEY").is_err());
+        assert!(validate_key("123").is_err());
     }
 
     #[test]
@@ -402,6 +452,25 @@ mod tests {
         let f = EnvFile::parse(Path::new("x"), "BAD=\"oops\n");
         assert_eq!(f.entries().count(), 0);
         assert_eq!(f.unparseable_lines(), vec![0]);
+    }
+
+    #[test]
+    fn syntax_diagnostics_never_echo_source_or_values() {
+        let file = EnvFile::parse(
+            Path::new("fixture"),
+            "# comment\nKEY =fixture-secret\nBAD=\"fixture-secret\nOTHER='fixture-secret\n",
+        );
+        let issues: Vec<_> = file.syntax_issues().collect();
+        assert_eq!(issues.len(), 3);
+        assert_eq!(issues[0].0, 1);
+        assert!(issues[0].1.contains("whitespace"));
+        assert!(issues[1].1.contains("double-quoted"));
+        assert!(issues[2].1.contains("single-quoted"));
+        assert!(
+            issues
+                .iter()
+                .all(|(_, reason)| !reason.contains("fixture-secret"))
+        );
     }
 
     #[test]

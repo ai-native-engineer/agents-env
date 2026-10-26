@@ -46,7 +46,7 @@ Masking only touches the output stream (child → caller); it never alters the i
 | `copy <KEY[@tag]…> --to <file>` | Copy secrets from the global store into a local file; values are not printed. `--as NEWKEY` renames. |
 | `generate <KEY>` | Add a new random key to the configured global store; refuse existing names and never print the value, even in human mode. |
 | `edit` | Open the global store in `$EDITOR`. Human only; refused in agent mode and on non-TTY. |
-| `doctor` | Check file permissions, gitignore coverage, stale backups, untagged duplicate keys, Claude Code deny rules. |
+| `doctor` | Check global-store syntax/read errors, permissions, gitignore, stale backups, untagged duplicates and Claude Code deny rules. Never prints values or malformed source lines. |
 | `config show` / `config path` | Show effective settings or the config path without reading secret values. |
 | `config set <key> <value>` / `config reset <key>` | Change one setting or restore its default; refused in agent mode. |
 
@@ -101,6 +101,8 @@ from writes. Prefer the default location or a dedicated `~/secrets/` directory.
 
 **Scope and files.** The default scope is the global store. `-l`/`--local` reads `./.env`; `-f <name>` reads `./<name>`, which handles `.env.local`, `.env.production`, and the like.
 
+The reader recognizes existing digit-prefixed names without renaming or rewriting them. New names supplied to `set`, `generate` and `copy --as` still require portable `[A-Za-z_][A-Za-z0-9_]*` identifiers. Use a program's environment API rather than `$NAME` shell syntax for digit-prefixed names.
+
 ```
 agents-env -f .env.production get DATABASE
 ```
@@ -123,6 +125,7 @@ agents-env run SERVICE_API_KEY -- my-service
 - Existing names are refused, including empty values, ASCII case variants and tagged duplicate accounts. No existing entry is replaced or commented out.
 - Original bytes, comments, CRLF and order remain unchanged; only a separate entry is appended. A missing trailing newline is added as a separator. Before saving, the candidate is parsed again to verify unchanged existing values/tags and a unique, usable new key.
 - Malformed lines, invalid UTF-8, NUL and any input whose meaning would change cause refusal before touching the store or backup. Errors name lines/reasons, never values. Comments are annotations and account selectors, not a duplicate-resolution mechanism.
+- When syntax blocks generation, use `agents-env doctor` for value-free reasons from the same parser. Do not print or ignore the malformed source line.
 - `generate` and `edit` share a stable exclusive lock. A busy store exits 2: retry after the other operation finishes. Retrying an existing name never rotates its key.
 - Stores and backups use 0600, new parent directories use 0700. Links, special files and missing Git protection are refused; staging files must also be ignored. Generation backs up, publishes atomically and verifies the persisted key.
 
