@@ -3,6 +3,7 @@
 
 mod aimode;
 mod config;
+mod generate;
 mod guard;
 mod mask;
 mod store;
@@ -22,10 +23,13 @@ AGENT MODE (auto on Unix: Grok, Codex, OpenCode, Claude Code, AGY; opt-in: AGENT
   agents-env copy KEY@tag --to .env.local     global store -> local file, value
                                               never passes through your context
   agents-env set PORT 3000 --to .env.local    non-secret literals only
+  agents-env generate NEW_SERVICE_KEY        create a new random global key;
+                                              never prints or replaces a value
 
   KEY@tag picks one of several accounts for the same key (tags come from the
-  inline '# comment' in the env file). The global store is read-only by
-  design: no flag of set/copy can reach it. Humans edit it with `agents-env edit`.
+  inline '# comment' in the env file). Only generate can add a new global key;
+  existing keys are never changed. set/copy remain local-only. Humans edit
+  existing or externally issued credentials with `agents-env edit`.
 
   Other assistants and renamed/deeply wrapped CLIs are supported by explicit
   opt-in: launch them with AGENTS_ENV_AGENT_MODE=1, or add a marker you set
@@ -105,6 +109,8 @@ enum Cmd {
         #[arg(long = "as", value_name = "NEWKEY")]
         rename: Option<String>,
     },
+    /// Generate a new global key without seeing its value; never replace an existing key
+    Generate { key: String },
     /// Open the global store in $EDITOR (humans only — refused in agent mode)
     Edit,
     /// Audit protection coverage: permissions, gitignore, backups, dup keys
@@ -144,6 +150,22 @@ fn main() {
             to,
             rename,
         } => cmd_copy(selectors, to, rename.as_deref()),
+        Cmd::Generate { key } => {
+            if cli.local || cli.file.is_some() {
+                fail(
+                    3,
+                    "generate only writes the configured global store; omit --local/--file",
+                )
+            } else {
+                match generate::create(key) {
+                    Ok(()) => {
+                        println!("generated {key} [new global key; value hidden]");
+                        0
+                    }
+                    Err((code, message)) => fail(code, &message),
+                }
+            }
+        }
         Cmd::Edit => cmd_edit(),
         Cmd::Doctor => cmd_doctor(),
     };
@@ -567,13 +589,17 @@ fn cmd_edit() -> i32 {
     if aimode::agent_mode() {
         return fail(
             2,
-            "edit is human-only. Agents: use `copy`/`set` on local files; the global store is read-only for you.",
+            "edit is human-only. Agents: use `generate` for a new random global key, or `copy`/`set` on local files; existing global values cannot be changed.",
         );
     }
     let tty = unsafe { libc::isatty(0) == 1 && libc::isatty(1) == 1 };
     if !tty {
         return fail(2, "edit requires an interactive terminal");
     }
+    let _lock = match generate::lock_store() {
+        Ok(lock) => lock,
+        Err((code, message)) => return fail(code, &message),
+    };
     let path = config::global_store();
     if let Some(dir) = path.parent()
         && let Err(e) = std::fs::create_dir_all(dir)

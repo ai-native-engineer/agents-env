@@ -2,13 +2,19 @@
 name: agents-env
 description: >-
   Use and manage secrets/env vars through the `agents-env` CLI WITHOUT ever
-  putting the value into your own context. Use whenever you need to pass an API
+  putting the value into your own context. Use when you need to pass an API
   key, token, or secret to a command (curl, an SDK CLI, a test runner), build a
   project .env / .env.local from stored secrets, or find which env keys exist —
   without printing the value. Core verbs: run (inject into a child + mask its
   output + {{KEY}} argv substitution), copy (global store → local file,
   value never passes through you), get / ls (discovery; values hidden in agent
-  mode). The global master store is read-only for agents — never try to write it.
+  mode), and generate (append a new random global key without seeing its value).
+  Existing global credentials are never changed by agent commands.
+metadata:
+  requires:
+    - tool: agents-env
+      check: agents-env --version
+      install: cargo install agents-env
 ---
 
 # agents-env
@@ -32,7 +38,8 @@ agents-env config path
 
 Use the effective path from `config show`; respect existing settings and XDG
 resolution. A human can choose an existing store with `config set global_store`
-or register new secrets through `edit`. Config changes are refused in agent
+or register externally issued credentials through `edit`. Use `generate` for
+new random keys owned by your own services. Config changes are refused in agent
 mode because redirecting the global store changes the write-protection boundary.
 Never remove agent markers to get around this check. Then use `agents-env doctor`
 to check setup and the harness deny rules. This works the same for Grok,
@@ -118,6 +125,18 @@ agents-env copy GEMINI_API_KEY@personal --to .env.local
 agents-env set NEXT_PUBLIC_URL http://localhost:3000 --to .env.local   # non-secret literals
 ```
 
+Create a random key for your own service without handling its value:
+```
+agents-env generate SERVICE_API_KEY
+agents-env run SERVICE_API_KEY -- my-service
+```
+
+Generation appends only to the configured global store. An existing name,
+including case variants or tagged duplicates, is refused rather than replaced.
+Malformed input is refused before saving; do not comment out old keys or repair
+real credential files to force generation through. A busy store can be retried
+after the other writer finishes. Generation cannot issue external provider keys.
+
 ## Selectors and scope
 
 - `KEY@tag` picks one account when a key has several; the tag is the inline
@@ -128,9 +147,10 @@ agents-env set NEXT_PUBLIC_URL http://localhost:3000 --to .env.local   # non-sec
 
 ## Rules and limits
 
-- **Never write the global store.** `set`/`copy` only write local `.env*` files
-  in the cwd; the global store is human-only (a human edits it with
-  `agents-env edit`). Don't fight the write guard — fix the actual target.
+- **Only `generate` may append a new global key.** It never accepts or prints
+  a value and never changes an existing name. `set`/`copy` stay local-only;
+  humans use `edit` for existing or externally issued credentials. Do not
+  bypass the guards or read the store directly.
 - **Masking is defense in depth, not a sandbox.** It catches verbatim values,
   not re-encoded ones (base64, splitting). Reading `.env` files directly still
   exposes secrets — that is the harness deny-rule layer's job, not this tool's.

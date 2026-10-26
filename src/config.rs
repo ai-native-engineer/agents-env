@@ -291,7 +291,7 @@ fn update_config(config: &Config, key: &str, value: Option<&str>) -> Result<(), 
         .map_err(|e| format!("config write failed: {e}"))
 }
 
-fn check_config_target(config: &Config) -> Result<(), String> {
+pub(crate) fn check_config_target(config: &Config) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
     // Config backups and staging files belong to the settings writer. A store
     // must never occupy one, including via a symlinked parent directory.
