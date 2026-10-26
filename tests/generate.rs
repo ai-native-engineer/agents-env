@@ -183,6 +183,41 @@ fn unrelated_tagged_accounts_survive_and_select_as_before() {
 }
 
 #[test]
+fn numeric_existing_keys_are_preserved_discoverable_and_masked() {
+    let original = "# fixture accounts\r\n1SERVICE_KEY='fixture-numeric-value' # old\r\n";
+    let sb = Sandbox::new(original.as_bytes());
+    sb.generate("NEW_KEY");
+    assert!(
+        fs::read(&sb.store)
+            .unwrap()
+            .starts_with(original.as_bytes())
+    );
+    let found = sb.cmd().args(["get", "1SERVICE_KEY"]).assert().success();
+    let stdout = String::from_utf8_lossy(&found.get_output().stdout);
+    assert!(stdout.contains("1SERVICE_KEY"));
+    assert!(!stdout.contains("fixture-numeric-value"));
+    let result = sb
+        .cmd()
+        .args(["run", "1SERVICE_KEY@old", "--", "env"])
+        .assert()
+        .success();
+    assert!(
+        String::from_utf8_lossy(&result.get_output().stdout)
+            .contains("1SERVICE_KEY=[masked:1SERVICE_KEY]")
+    );
+    assert!(
+        !String::from_utf8_lossy(&result.get_output().stdout).contains("fixture-numeric-value")
+    );
+    let before = fs::read(&sb.store).unwrap();
+    sb.cmd().args(["generate", "1SERVICE_KEY"]).assert().code(3);
+    assert_eq!(fs::read(&sb.store).unwrap(), before);
+    assert_eq!(
+        fs::read(&sb.backup_files()[0]).unwrap(),
+        original.as_bytes()
+    );
+}
+
+#[test]
 fn malformed_input_cannot_hide_a_key_or_leak_its_contents() {
     for original in [
         b"KEY=fixture-old\nBAD=\"fixture-unclosed".as_slice(),
@@ -398,6 +433,9 @@ fn locked_store_is_refused_without_writing_and_can_retry_after_unlock() {
     sb.cmd().args(["generate", "NEW_KEY"]).assert().code(2);
     assert_eq!(fs::read(&sb.store).unwrap(), b"KEEP=fixture-original\n");
     assert!(sb.backup_files().is_empty());
+    // Explicitly release the lock before retrying. A concurrent test can be
+    // between fork and exec and briefly retain a duplicate of this descriptor.
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_UN) }, 0);
     drop(lock);
     sb.generate("NEW_KEY");
 }

@@ -917,6 +917,56 @@ fn edit_refused_in_agent_mode_and_non_tty() {
     assert_eq!(fs::read_to_string(sb.global_path()).unwrap(), GLOBAL);
 }
 
+#[test]
+fn doctor_reports_parse_failures_without_printing_source() {
+    let sb = Sandbox::new();
+    for (source, reason) in [
+        (
+            "PRIVATE_KEY =fixture-sensitive-value\n",
+            "whitespace between a variable name and '='",
+        ),
+        (
+            "PRIVATE_KEY=\"fixture-sensitive-value\n",
+            "unterminated double-quoted value",
+        ),
+        (
+            "PRIVATE_KEY='fixture-sensitive-value\n",
+            "unterminated single-quoted value",
+        ),
+        (
+            "PRIVATE_KEY=\"fixture-sensitive-value\" trailing\n",
+            "unexpected characters after a quoted value",
+        ),
+        ("PRIVATE_KEY=fixture-sensitive-value\0\n", "NUL bytes"),
+    ] {
+        fs::write(sb.global_path(), format!("# header\n{source}")).unwrap();
+        let result = sb.cmd(true).arg("doctor").assert().code(1);
+        let text = String::from_utf8_lossy(&result.get_output().stdout);
+        assert!(text.contains("line 2 is not parseable"));
+        assert!(text.contains(reason));
+        assert!(!text.contains("PRIVATE_KEY"));
+        assert!(!text.contains("fixture-sensitive-value"));
+        assert!(!text.contains("ok: no warnings"));
+        assert_eq!(
+            fs::read_to_string(sb.global_path()).unwrap(),
+            format!("# header\n{source}")
+        );
+    }
+}
+
+#[test]
+fn doctor_reports_invalid_utf8_without_printing_bytes() {
+    let sb = Sandbox::new();
+    let original = b"PRIVATE_KEY=fixture-sensitive-value\xff\n";
+    fs::write(sb.global_path(), original).unwrap();
+    let result = sb.cmd(true).arg("doctor").assert().code(1);
+    let text = String::from_utf8_lossy(&result.get_output().stdout);
+    assert!(text.contains("cannot read global store as UTF-8"));
+    assert!(!text.contains("PRIVATE_KEY"));
+    assert!(!text.contains("fixture-sensitive-value"));
+    assert_eq!(fs::read(sb.global_path()).unwrap(), original);
+}
+
 // ---------------------------------------------------------------- local scope
 
 #[test]
