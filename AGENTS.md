@@ -27,11 +27,12 @@ This authorization covers the local CLI and its PR workflow. Registry publishing
 
 ## Architecture (one responsibility per module)
 
-- `main.rs` — clap CLI + command handlers (`get`/`ls`/`run`/`set`/`copy`/`edit`/`doctor`/`config`), scope resolution, mask-set assembly.
+- `main.rs` — clap CLI + command handlers (`get`/`ls`/`run`/`set`/`copy`/`generate`/`edit`/`doctor`/`config`), scope resolution, mask-set assembly.
 - `aimode.rs` — agent-mode detection from env markers (+ config `markers=`).
 - `config.rs` — typed settings loaded once per invocation, portable path resolution, guarded config edits. The global store resolves to an absolute path and is never per-command overridable.
 - `store.rs` — line-preserving `.env` parser, `KEY@tag` selector, round-trip editing.
 - `guard.rs` — write-side guards, backup, atomic write, git-ignore gate, secret heuristic.
+- `generate.rs` — append-only global key generation, byte-preserving candidate validation, directory-relative transactions and the lock shared with human `edit` sessions.
 - `mask.rs` — child injection + leftmost-longest streaming output masking + `{{KEY}}` argv substitution.
 
 ## Security invariants — do not regress (each has a test)
@@ -44,6 +45,8 @@ These are the product. A change that weakens one is a bug even if it compiles:
 4. `set`/`copy` can only write bare `.env*` files in cwd; the global store is unreachable (no flag, path-separator/symlink/hardlink/samefile/cwd-in-store-dir-or-descendant all rejected).
 5. Secret-bearing `copy` refuses git-tracked or non-gitignored targets (no override).
 6. Writes back up to `<file>.YYMMDD.bak` (first-of-day wins) then write atomically (`O_NOFOLLOW` temp + rename).
+7. `generate` is the only agent-accessible global writer: OS-random new keys only, no caller value, replacement or tag option; ASCII case-insensitive existing names and malformed stores are refused before persistence. Existing bytes and parsed values/tags remain unchanged, and a generated key must be discoverable by the same parser/selector used by `get`/`run`.
+8. Global generation and `edit` hold the same exclusive sidecar lock. Store, backup and staging protections fail closed; concurrent generation never loses an accepted key. Values never appear in generation output, including human mode.
 
 When adding a feature near these, add the adversarial test first. Known accepted limits are documented in README's threat model — don't "fix" them silently.
 

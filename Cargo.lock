@@ -4,11 +4,12 @@ version = 4
 
 [[package]]
 name = "agents-env"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aho-corasick",
  "assert_cmd",
  "clap",
+ "getrandom",
  "libc",
  "predicates",
  "same-file",

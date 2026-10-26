@@ -27,7 +27,7 @@ agents-env run TAVILY_API_KEY@work -- curl -H "Authorization: Bearer {{TAVILY_AP
 - **출력 마스킹**: 주입한 시크릿이 자식의 stdout/stderr에 나타나면 실시간으로 `[masked:KEY]`로 치환한다. `doppler run`·`infisical run`은 주입만 하고 출력은 막지 않는다.
 - **값 비경유 복사**: `copy`는 전역 store의 시크릿을 로컬 `.env`로 옮기되, 값이 에이전트 컨텍스트를 거치지 않는다.
 - **에이전트 모드 감지**: Grok, Codex, OpenCode, Claude Code, AGY는 런타임 마커나 부모 CLI 이름으로 자동 인식하고, 다른 어시스턴트는 `AGENTS_ENV_AGENT_MODE=1` 또는 `markers=`로 명시 opt-in한다.
-- **비대칭 쓰기 가드**: 사람이 관리하는 전역 마스터 `.env`는 이 도구로 수정할 수 없다.
+- **비대칭 쓰기 가드**: 기존 전역 키는 사람이 관리한다. 에이전트는 `generate`로 값이 노출되지 않는 새 무작위 키만 추가할 수 있다.
 
 ## 동작 방식
 
@@ -44,6 +44,7 @@ agents-env run TAVILY_API_KEY@work -- curl -H "Authorization: Bearer {{TAVILY_AP
 | `run <KEY[@tag]…> -- <cmd>` | 자식 env에 주입, 출력 마스킹, argv의 `{{KEY}}` 치환. `--all`은 스코프 전체 주입. |
 | `set <KEY> <VALUE> --to <file>` | 로컬 파일에 비밀이 아닌 값 기록. 크리덴셜 형태면 경고. |
 | `copy <KEY[@tag]…> --to <file>` | 전역 store의 시크릿을 로컬 파일로 복사. 값은 출력하지 않음. `--as NEWKEY`로 키 이름 변경. |
+| `generate <KEY>` | 설정된 전역 store에 새 무작위 키를 추가. 기존 이름은 거부하며, 값은 사람/에이전트 모두에게 출력하지 않음. |
 | `edit` | 전역 store를 `$EDITOR`로 연다. 사람 전용이며 에이전트 모드·비TTY에서는 거부. |
 | `doctor` | 파일 권한, gitignore 커버리지, 오래된 백업, 태그 없는 중복 키, Claude Code deny 규칙 점검. |
 | `config show` / `config path` | 시크릿 파일을 읽지 않고 유효 설정과 설정 파일 위치 조회. |
@@ -79,8 +80,9 @@ agents-env config set markers 'MY_AGENT_MODE,MY_OTHER_AGENT'
 agents-env config reset editor
 ```
 
-설정 변경은 원래 `.env`를 이동하거나 생성하지 않는다. 새 시크릿은 사람이
-`agents-env edit`로 등록한다. `config set/reset`은 주석과 나머지 설정을
+설정 변경은 원래 `.env`를 이동하거나 생성하지 않는다. 외부 서비스에서 발급받은
+시크릿과 기존 키 수정은 사람이 `agents-env edit`로 처리한다. 자체 서비스용 새
+무작위 키는 `generate`로 만들 수 있다. `config set/reset`은 주석과 나머지 설정을
 보존하며 변경 전 일별 백업과 0600 원자 쓰기를 사용한다. 알 수 없는 키,
 중복 설정, 읽기 오류는 명시적으로 실패하며 조용히 기본값으로 대체하지 않는다.
 `global_store=`를 비우는 대신 `config reset global_store`로 복원할 수 있다.
@@ -107,6 +109,21 @@ agents-env -f .env.production get DATABASE
 agents-env copy NOTION_API_KEY@demodev --to .env.local
 ```
 
+## 값을 보지 않고 새 키 생성
+
+```sh
+agents-env generate SERVICE_API_KEY
+agents-env run SERVICE_API_KEY -- my-service
+```
+
+`generate`는 OS 난수 32바이트를 64자리 소문자 hex로 저장한다. 입력은 키 이름뿐이고 값, 태그, 덮어쓰기, 교체 옵션은 받지 않는다. `--local`/`--file`도 거부하며 `get`/`run`과 같은 설정된 전역 경로에만 쓴다. 외부 서비스의 API 키를 발급하는 기능은 아니다.
+
+- 기존 키가 있으면 빈 값, 대소문자만 다른 이름, 계정 태그가 있는 중복까지 모두 거부한다. 기존 키를 주석 처리하거나 갱신하지 않는다.
+- 원본 바이트와 주석, CRLF, 줄 순서를 그대로 두고 마지막에 새 항목만 추가한다. 마지막 개행이 없으면 구분 개행을 추가한다. 완성된 내용을 다시 파싱해 기존 항목의 값과 태그가 같고 새 키가 유일하게 조회되는지 확인한 뒤 저장한다.
+- 파싱할 수 없는 줄, 잘못된 UTF-8, NUL 또는 추가 후 의미가 바뀌는 원문이 있으면 파일과 백업을 건드리지 않고 실패한다. 오류에는 값 대신 줄 번호/원인만 표시한다. 주석은 설명과 기존 계정 선택용이지 중복 해결 수단이 아니다.
+- 잠금은 동시에 실행한 `generate`와 `edit`를 직렬화한다. 사용 중이면 종료 코드 2로 거부하므로 완료 후 재시도한다. 같은 이름으로 재시도해도 이미 만든 키는 바뀌지 않는다.
+- 파일과 백업은 0600, 새 상위 폴더는 0700으로 만들고, 링크/특수 파일과 Git 보호가 없는 대상은 거부한다. 임시 파일도 Git에서 제외되어야 한다. 저장 전 백업과 원자적 교체 후 재조회 검증을 거친다.
+
 ## 쓰기 가드
 
 `set`/`copy`는 현재 디렉토리의 `.env*` 파일만 쓴다. 전역 store는 구조적으로 도달할 수 없다.
@@ -119,7 +136,7 @@ agents-env copy NOTION_API_KEY@demodev --to .env.local
 - git 레포 안에서는 시크릿을 쓰는 `copy` 타겟이 추적되지 않으면서 gitignore되어 있어야 한다. 아니면 하드 에러로 막는다(override 없음, `.gitignore` 수정 필요).
 - 기존 파일에 `set`/`copy`로 쓸 때는 백업도 Git에서 제외되어 있어야 한다. `.env` 한 줄만 제외하는 대신 `.env*`로 백업까지 보호한다. Git 검사 실패 시 복사하지 않는다.
 
-쓰기 전에는 `<file>.YYMMDD.bak` 백업을 만든다. 같은 날 두 번째 쓰기부터는 그날의 첫 백업을 유지한다(작업 시작 전 상태가 복구 지점이므로). 이후 `O_NOFOLLOW` 임시 파일에 쓰고 rename으로 교체한다. 백업도 `.env`로 시작하므로 `.env*` gitignore 한 줄로 함께 덮인다.
+쓰기 전에는 `<file>.YYMMDD.bak` 백업을 만든다. 같은 날 두 번째 쓰기부터는 그날의 첫 백업을 유지한다(작업 시작 전 상태가 복구 지점이므로). 이후 `O_NOFOLLOW` 임시 파일에 쓰고 rename으로 교체한다. 백업도 `.env`로 시작하므로 `.env*` gitignore 한 줄로 함께 덮인다. `generate`의 예외적인 전역 추가는 위 절의 더 좁은 규칙을 따른다.
 
 ## 한계
 
@@ -172,8 +189,8 @@ MY_AGENT_MODE=1 agents-env get TAVILY
 
 - **감지는 신호이지 차단막이 아니다.** 모드는 env 마커와 가까운 부모 CLI 이름으로 판단하므로, 에이전트가 마커를 제거하고 CLI 이름도 숨기면 사람 모드가 될 수 있다. 대상 위협은 실수로 시크릿을 로깅하면 안 되는 정직한 에이전트다. 악의적 에이전트가 store를 직접 읽는 것은 이 도구가 아니라 deny 규칙이 막을 영역이다.
 - **`{{KEY}}`는 같은 사용자의 `ps`에 노출된다.** 값이 자식 argv에 들어가 같은 사용자의 다른 프로세스가 읽을 수 있다. 공유 머신에서 민감한 값은 `{{KEY}}` 대신 env 주입을 사용한다.
-- **부모 디렉토리 스왑 TOCTOU.** 가드가 cwd를 canonicalize하고 임시 파일에 `O_NOFOLLOW`를 쓰지만, 같은 사용자 권한의 공격자가 쓰기 도중 부모 디렉토리를 rename하면 우회할 수 있다. 완전한 차단은 디렉토리 fd(`openat`/`renameat`) 방식이 필요하며 다음 버전에서 다룬다. 로컬 동일 사용자 쓰기 권한 없이는 도달할 수 없고, 그 권한이 있다면 시크릿은 이미 노출된 상태다.
-- **줄 끝은 LF로 정규화된다.** 라운드트립은 주석·순서·간격을 보존하지만 CRLF 파일은 LF로 다시 쓰이고 끝에 개행이 추가된다.
+- **동시 편집의 경계.** `generate`와 `edit`는 같은 잠금을 사용한다. 도구 밖 편집기는 잠금을 따르지 않으므로 생성 중 직접 편집하지 않는다. 생성은 열린 디렉토리 fd(`openat`/`renameat`)를 사용하고 교체 전 파일 변경을 재확인하지만, 같은 사용자 권한의 악의적인 파일 교체까지 막는 샌드박스는 아니다. 기존 `set`/`copy`에는 부모 디렉토리 교체 경쟁의 한계가 있다.
+- **줄 끝 보존.** `generate`는 기존 바이트를 정규화하지 않는다. 기존 `set`/`copy` 라운드트립은 주석·순서·간격을 보존하지만 CRLF를 LF로 쓰고 끝에 개행을 추가한다.
 
 ## 설치
 

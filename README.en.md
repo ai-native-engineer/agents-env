@@ -27,7 +27,7 @@ There is no shortage of env and secret tools, but few keep the value out of the 
 - **Output masking** — when an injected secret appears in the child's stdout/stderr, it is replaced with `[masked:KEY]` in real time. `doppler run` and `infisical run` inject but leave the output untouched.
 - **Value-free copy** — `copy` moves a secret from the global store into a local `.env` without the value passing through the agent's context.
 - **Agent-mode detection** — it auto-detects Grok, Codex, OpenCode, Claude Code, and AGY from runtime markers or parent CLI names; other assistants opt in with `AGENTS_ENV_AGENT_MODE=1` or `markers=`.
-- **Asymmetric write guard** — the human-managed global master `.env` cannot be modified through this tool.
+- **Asymmetric write guard** — existing global values remain human-managed. Agents may only append a new, internally generated random key with `generate`.
 
 ## How it works
 
@@ -44,6 +44,7 @@ Masking only touches the output stream (child → caller); it never alters the i
 | `run <KEY[@tag]…> -- <cmd>` | Inject into the child env, mask its output, substitute `{{KEY}}` in argv. `--all` injects the whole scope. |
 | `set <KEY> <VALUE> --to <file>` | Write a non-secret value to a local file. Warns if it looks like a credential. |
 | `copy <KEY[@tag]…> --to <file>` | Copy secrets from the global store into a local file; values are not printed. `--as NEWKEY` renames. |
+| `generate <KEY>` | Add a new random key to the configured global store; refuse existing names and never print the value, even in human mode. |
 | `edit` | Open the global store in `$EDITOR`. Human only; refused in agent mode and on non-TTY. |
 | `doctor` | Check file permissions, gitignore coverage, stale backups, untagged duplicate keys, Claude Code deny rules. |
 | `config show` / `config path` | Show effective settings or the config path without reading secret values. |
@@ -81,7 +82,8 @@ agents-env config reset editor
 ```
 
 Changing settings does not create or move the secret store. Humans register
-secrets with `agents-env edit`. Config writes preserve comments and other
+externally issued credentials or change existing values with `agents-env edit`.
+Use `generate` for new random keys owned by your own services. Config writes preserve comments and other
 settings, back up once per day, and use atomic 0600 writes. Unknown keys,
 duplicate settings, and read failures produce errors rather than silently
 falling back to defaults. Use `config reset global_store` instead of an empty
@@ -109,6 +111,21 @@ agents-env -f .env.production get DATABASE
 agents-env copy NOTION_API_KEY@demodev --to .env.local
 ```
 
+## Generate without seeing the value
+
+```sh
+agents-env generate SERVICE_API_KEY
+agents-env run SERVICE_API_KEY -- my-service
+```
+
+`generate` encodes 32 OS-random bytes as 64 lowercase hexadecimal characters. It accepts only a key name, not a value, tag, overwrite or rotation option. `--local`/`--file` are refused: generation uses the same configured global path as `get`/`run`. It does not issue credentials for external providers.
+
+- Existing names are refused, including empty values, ASCII case variants and tagged duplicate accounts. No existing entry is replaced or commented out.
+- Original bytes, comments, CRLF and order remain unchanged; only a separate entry is appended. A missing trailing newline is added as a separator. Before saving, the candidate is parsed again to verify unchanged existing values/tags and a unique, usable new key.
+- Malformed lines, invalid UTF-8, NUL and any input whose meaning would change cause refusal before touching the store or backup. Errors name lines/reasons, never values. Comments are annotations and account selectors, not a duplicate-resolution mechanism.
+- `generate` and `edit` share a stable exclusive lock. A busy store exits 2: retry after the other operation finishes. Retrying an existing name never rotates its key.
+- Stores and backups use 0600, new parent directories use 0700. Links, special files and missing Git protection are refused; staging files must also be ignored. Generation backs up, publishes atomically and verifies the persisted key.
+
 ## Write guard
 
 `set`/`copy` only write `.env*` files in the current directory. The global store is unreachable by construction.
@@ -121,7 +138,7 @@ agents-env copy NOTION_API_KEY@demodev --to .env.local
 - Inside a git repo, a secret-bearing `copy` target must be both untracked and gitignored. Otherwise it is a hard error (no override; fix `.gitignore`).
 - Backups of existing targets must also be untracked and ignored for both `set` and `copy`. Use `.env*` rather than only `.env`; a Git verification failure refuses the copy.
 
-Every write makes a `<file>.YYMMDD.bak` backup first. From the second write of the day onward it keeps that day's first backup, since the state before the day's work is the recovery point. It then writes to an `O_NOFOLLOW` temp file and renames it into place. Backups also start with `.env`, so one `.env*` gitignore line covers them.
+Every write makes a `<file>.YYMMDD.bak` backup first. From the second write of the day onward it keeps that day's first backup, since the state before the day's work is the recovery point. It then writes to an `O_NOFOLLOW` temp file and renames it into place. Backups also start with `.env`, so one `.env*` gitignore line covers them. The exceptional global append through `generate` follows the narrower rules above.
 
 ## Limitations
 
@@ -174,8 +191,8 @@ MY_AGENT_MODE=1 agents-env get TAVILY
 
 - **Detection is a signal, not a barrier.** Mode is decided from env markers and nearby parent CLI names, so an agent can reach human mode by hiding both. The intended threat is an honest agent that should not accidentally log a secret. Direct store access by a malicious agent is for the deny rules to stop, not this tool.
 - **`{{KEY}}` is visible to a same-user `ps`.** The value lands in the child's argv, where another process of the same user can read it. On a shared machine, use env injection instead of `{{KEY}}` for sensitive values.
-- **Parent-directory-swap TOCTOU.** The guard canonicalizes cwd and uses `O_NOFOLLOW` on the temp file, but a same-user attacker who renames a parent directory mid-write could still redirect it. Closing this fully needs directory-fd (`openat`/`renameat`) writes, planned for a later version. It is unreachable without local same-user write access, and with that access the secrets are already exposed.
-- **Line endings normalize to LF.** Round-trips preserve comments, order, and spacing, but a CRLF file is rewritten with LF and gains a trailing newline.
+- **Concurrent editing boundary.** `generate` and `edit` share a lock. External editors do not follow it, so do not edit the store directly during generation. Generation uses directory-relative `openat`/`renameat` and rechecks changes before publishing, but is not a sandbox against malicious same-user mutation. Existing `set`/`copy` retain the parent-directory-swap race limit.
+- **Line endings.** `generate` preserves existing bytes. Existing `set`/`copy` round-trips preserve comments, order and spacing, but rewrite CRLF as LF and add a trailing newline.
 
 ## Install
 
